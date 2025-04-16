@@ -296,6 +296,22 @@ func FuzzCaseDefault(f *testing.F) {
 
 var expressionTests = []testInput{
 	{
+		name:  "string literal",
+		input: `"hello"`,
+	},
+	{
+		name:  "string literal with escape",
+		input: `"hello\n"`,
+	},
+	{
+		name:  "backtick string literal",
+		input: "`hello`",
+	},
+	{
+		name:  "backtick string literal containing double quote",
+		input: "`hello" + `"` + `world` + "`",
+	},
+	{
 		name:  "function call in package",
 		input: `components.Other()`,
 	},
@@ -338,6 +354,18 @@ var expressionTests = []testInput{
 		name:  "string concat",
 		input: `direction + "newest"`,
 	},
+	{
+		name: "function call",
+		input: `SplitRule(types.GroupMember{
+    UserID:   uuid.NewString(),
+    Username: "user me",
+}, []types.GroupMember{
+    {
+    UserID:   uuid.NewString(),
+    Username: "user 1",
+    },
+})`,
+	},
 }
 
 func TestExpression(t *testing.T) {
@@ -347,14 +375,175 @@ func TestExpression(t *testing.T) {
 		"}",
 		"\t}",
 		"  }",
-		"</div>",
-		"<p>/</p>",
 	}
 	for _, test := range expressionTests {
 		for i, suffix := range suffixes {
 			t.Run(fmt.Sprintf("%s_%d", test.name, i), run(test, prefix, suffix, Expression))
 		}
 	}
+}
+
+var templExpressionTests = []testInput{
+	{
+		name:  "function call in package",
+		input: `components.Other()`,
+	},
+	{
+		name:  "slice index call",
+		input: `components[0].Other()`,
+	},
+	{
+		name:  "map index function call",
+		input: `components["name"].Other()`,
+	},
+	{
+		name: "multiline chain call",
+		input: `components.
+	Other()`,
+	},
+	{
+		name:  "map index function call backtick literal",
+		input: "components[`name" + `"` + "`].Other()",
+	},
+	{
+		name:  "function literal",
+		input: `components["name"].Other(func() bool { return true })`,
+	},
+	{
+		name: "multiline function call",
+		input: `component(map[string]string{
+				"namea": "name_a",
+			  "nameb": "name_b",
+			})`,
+	},
+	{
+		name: "function call with slice of complex types",
+		input: `tabs([]TabData{
+  {Name: "A"},
+  {Name: "B"},
+})`,
+	},
+	{
+		name: "function call with slice of explicitly named complex types",
+		input: `tabs([]TabData{
+  TabData{Name: "A"},
+  TabData{Name: "B"},
+})`,
+	},
+	{
+		name:  "function call with empty slice of strings",
+		input: `Inner([]string{})`,
+	},
+	{
+		name:  "function call with empty slice of maps",
+		input: `Inner([]map[string]any{})`,
+	},
+	{
+		name:  "function call with empty slice of anon structs",
+		input: `Inner([]map[string]struct{}{})`,
+	},
+	{
+		name: "function call with slice of pointers to complex types",
+		input: `tabs([]*TabData{
+  &{Name: "A"},
+  &{Name: "B"},
+})`,
+	},
+	{
+		name: "function call with slice of pointers to explicitly named complex types",
+		input: `tabs([]*TabData{
+  &TabData{Name: "A"},
+  &TabData{Name: "B"},
+})`,
+	},
+	{
+		name: "function call with array of explicit length",
+		input: `tabs([2]TabData{
+  {Name: "A"},
+  {Name: "B"},
+})`,
+	},
+	{
+		name: "function call with array of inferred length",
+		input: `tabs([...]TabData{
+  {Name: "A"},
+  {Name: "B"},
+})`,
+	},
+	{
+		name: "function call with function arg",
+		input: `componentA(func(y []int) string {
+		return "hi"
+	})`,
+	},
+	{
+		name: "function call with function called arg",
+		input: `componentA(func(y []int) string {
+		return "hi"
+	}())`,
+	},
+	{
+		name:  "call with braces and brackets",
+		input: `templates.New(test{}, other())`,
+	},
+	{
+		name:  "generic call",
+		input: `templates.New(toString[[]int](data))`,
+	},
+	{
+		name:  "struct method call",
+		input: `typeName{}.Method()`,
+	},
+	{
+		name:  "struct method call in other package",
+		input: "layout.DefaultLayout{}.Compile()",
+	},
+	{
+		name:  "bare variable",
+		input: `component`,
+	},
+}
+
+func TestTemplExpression(t *testing.T) {
+	prefix := ""
+	suffixes := []string{
+		"",
+		"}",
+		"\t}",
+		"  }",
+		"</div>",
+		"<p>/</p>",
+		" just some text",
+		" { <div>Child content</div> }",
+	}
+	for _, test := range templExpressionTests {
+		for i, suffix := range suffixes {
+			t.Run(fmt.Sprintf("%s_%d", test.name, i), run(test, prefix, suffix, TemplExpression))
+		}
+	}
+}
+
+func FuzzTemplExpression(f *testing.F) {
+	suffixes := []string{
+		"",
+		" }",
+		" }}</a>\n}",
+		"...",
+	}
+	for _, test := range expressionTests {
+		for _, suffix := range suffixes {
+			f.Add(test.input + suffix)
+		}
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		src := "switch " + s
+		start, end, err := TemplExpression(src)
+		if err != nil {
+			t.Skip()
+			return
+		}
+		panicIfInvalid(src, start, end)
+	})
 }
 
 func FuzzExpression(f *testing.F) {

@@ -6,7 +6,7 @@ import (
 	"github.com/a-h/parse"
 )
 
-var tagTemplOrNewLine = parse.Any(parse.Rune('<'), parse.Rune('{'), parse.Rune('}'), parse.Rune('\n'))
+var tagTemplOrNewLine = parse.Any(parse.Rune('<'), parse.Rune('{'), parse.Rune('}'), parse.String("\r\n"), parse.Rune('\n'))
 
 var textParser = parse.Func(func(pi *parse.Input) (n Node, ok bool, err error) {
 	from := pi.Position()
@@ -21,6 +21,12 @@ var textParser = parse.Func(func(pi *parse.Input) (n Node, ok bool, err error) {
 	}
 	if _, ok = pi.Peek(1); !ok {
 		err = parse.Error("textParser: unterminated text, expected tag open, templ expression open, or newline", from)
+		return
+	}
+	t.Range = NewRange(from, pi.Position())
+
+	// Elide any void element closing tags.
+	if _, _, err = voidElementCloser.Parse(pi); err != nil {
 		return
 	}
 

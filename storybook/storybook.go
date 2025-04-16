@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,11 +19,11 @@ import (
 
 	"golang.org/x/mod/sumdb/dirhash"
 
-	"github.com/a-h/pathvars"
+	_ "embed"
+	"log/slog"
+
 	"github.com/a-h/templ"
 	"github.com/rs/cors"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 type Storybook struct {
@@ -35,10 +36,11 @@ type Storybook struct {
 	// Handlers for each of the components.
 	Handlers map[string]http.Handler
 	// Handler used to serve Storybook, defaults to filesystem at ./storybook-server/storybook-static.
-	StaticHandler http.Handler
-	Header        string
-	Server        http.Server
-	Log           *zap.Logger
+	StaticHandler      http.Handler
+	Header             string
+	Server             http.Server
+	Log                *slog.Logger
+	AdditionalPrefixJS string
 }
 
 type StorybookConfig func(*Storybook)
@@ -55,20 +57,28 @@ func WithHeader(header string) StorybookConfig {
 	}
 }
 
-func New(conf ...StorybookConfig) *Storybook {
-	cfg := zap.NewProductionConfig()
-	cfg.EncoderConfig.EncodeTime = zapcore.RFC3339TimeEncoder
-	logger, err := cfg.Build()
-	if err != nil {
-		panic("templ-storybook: zap configuration failed: " + err.Error())
+func WithPath(path string) StorybookConfig {
+	return func(sb *Storybook) {
+		sb.Path = path
 	}
+}
+
+// WithAdditionalPreviewJS / WithAdditionalPreviewJS allows to add content to the generated .storybook/preview.js file.
+// For example this can be used to include custom CSS.
+func WithAdditionalPreviewJS(content string) StorybookConfig {
+	return func(sb *Storybook) {
+		sb.AdditionalPrefixJS = content
+	}
+}
+
+func New(conf ...StorybookConfig) *Storybook {
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	sh := &Storybook{
 		Path:     "./storybook-server",
 		Config:   map[string]*Conf{},
 		Handlers: map[string]http.Handler{},
 		Log:      logger,
 	}
-	sh.StaticHandler = http.FileServer(http.Dir(path.Join(sh.Path, "storybook-static")))
 	sh.Server = http.Server{
 		Handler: sh,
 		Addr:    ":60606",
@@ -76,30 +86,30 @@ func New(conf ...StorybookConfig) *Storybook {
 	for _, sc := range conf {
 		sc(sh)
 	}
+
+	// Depends on the correct Path, so must be set after additional config
+	sh.StaticHandler = http.FileServer(http.Dir(path.Join(sh.Path, "storybook-static")))
+
 	return sh
 }
 
-func (sh *Storybook) AddComponent(name string, componentConstructor interface{}, args ...Arg) {
+func (sh *Storybook) AddComponent(name string, componentConstructor any, args ...Arg) *Conf {
 	//TODO: Check that the component constructor is a function that returns a templ.Component.
 	c := NewConf(name, args...)
 	sh.Config[name] = c
 	h := NewHandler(name, componentConstructor, args...)
 	sh.Handlers[name] = h
+	return c
 }
 
-var storybookPreviewMatcher = pathvars.NewExtractor("/storybook_preview/{name}")
-
 func (sh *Storybook) Build(ctx context.Context) (err error) {
-	defer func() {
-		_ = sh.Log.Sync()
-	}()
 	// Download Storybook to the directory required.
 	sh.Log.Info("Installing storybook.")
 	err = sh.installStorybook()
 	if err != nil {
 		return
 	}
-	if ctx.Err() != nil {
+	if err = ctx.Err(); err != nil {
 		return
 	}
 
@@ -109,7 +119,7 @@ func (sh *Storybook) Build(ctx context.Context) (err error) {
 	if err != nil {
 		return
 	}
-	if ctx.Err() != nil {
+	if err = ctx.Err(); err != nil {
 		return
 	}
 
@@ -123,7 +133,7 @@ func (sh *Storybook) Build(ctx context.Context) (err error) {
 	} else {
 		sh.Log.Info("Storybook is up-to-date, skipping build step.")
 	}
-	if ctx.Err() != nil {
+	if err = ctx.Err(); err != nil {
 		return
 	}
 
@@ -147,7 +157,7 @@ func (sh *Storybook) ListenAndServeWithContext(ctx context.Context) (err error) 
 		return
 	}
 	go func() {
-		sh.Log.Info("Starting Go server", zap.String("address", sh.Server.Addr))
+		sh.Log.Info("Starting Go server", slog.String("address", sh.Server.Addr))
 		err = sh.Server.ListenAndServe()
 	}()
 	<-ctx.Done()
@@ -157,26 +167,46 @@ func (sh *Storybook) ListenAndServeWithContext(ctx context.Context) (err error) 
 }
 
 func (sh *Storybook) previewHandler(w http.ResponseWriter, r *http.Request) {
-	values, ok := storybookPreviewMatcher.Extract(r.URL)
-	if !ok {
-		sh.Log.Info("URL not matched", zap.String("url", r.URL.String()))
+	prefix := path.Join(sh.RoutePrefix, "/storybook_preview/")
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		sh.Log.Warn("URL does not match preview prefix", slog.String("url", r.URL.String()))
 		http.NotFound(w, r)
 		return
 	}
-	name, ok := values["name"]
-	if !ok {
-		sh.Log.Info("URL does not contain component name", zap.String("url", r.URL.String()))
+
+	name, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, prefix))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to unescape URL: %v", err), http.StatusBadRequest)
+		return
+	}
+	if name == "" {
+		sh.Log.Warn("URL does not contain component name", slog.String("url", r.URL.String()))
 		http.NotFound(w, r)
 		return
 	}
+	name = strings.TrimPrefix(name, "/")
+
 	h, found := sh.Handlers[name]
 	if !found {
-		sh.Log.Info("Component name not found", zap.String("name", name), zap.String("url", r.URL.String()))
+		sh.Log.Info("Component name not found", slog.String("name", name), slog.String("url", r.URL.String()), slog.Any("available", keysOfMap(sh.Handlers)))
 		http.NotFound(w, r)
 		return
 	}
 	h.ServeHTTP(w, r)
 }
+
+func keysOfMap[K comparable, V any](handler map[K]V) (keys []K) {
+	keys = make([]K, len(handler))
+	var i int
+	for k := range handler {
+		keys[i] = k
+		i++
+	}
+	return keys
+}
+
+//go:embed _package.json
+var packageJSON string
 
 func (sh *Storybook) installStorybook() (err error) {
 	_, err = os.Stat(sh.Path)
@@ -189,6 +219,10 @@ func (sh *Storybook) installStorybook() (err error) {
 		if err != nil {
 			return fmt.Errorf("templ-storybook: error creating @storybook/server directory: %w", err)
 		}
+		err = os.WriteFile(filepath.Join(sh.Path, "package.json"), []byte(packageJSON), 0644)
+		if err != nil {
+			return fmt.Errorf("templ-storybook: error writing package.json: %w", err)
+		}
 	}
 	var cmd exec.Cmd
 	cmd.Dir = sh.Path
@@ -198,7 +232,7 @@ func (sh *Storybook) installStorybook() (err error) {
 	if err != nil {
 		return fmt.Errorf("templ-storybook: cannot install storybook, cannot find npx on the path, check that Node.js is installed: %w", err)
 	}
-	cmd.Args = []string{"npx", "sb", "init", "-t", "server"}
+	cmd.Args = []string{"npx", "sb", "init", "-t", "server", "--no-dev"}
 	return cmd.Run()
 }
 
@@ -233,7 +267,7 @@ func (sh *Storybook) configureStorybook() (configHasChanged bool, err error) {
 	}
 	configHasChanged = before != after
 	// Configure storybook Preview URL.
-	err = os.WriteFile(filepath.Join(sh.Path, ".storybook/preview.js"), []byte(previewJS), os.ModePerm)
+	err = os.WriteFile(filepath.Join(sh.Path, ".storybook/preview.js"), []byte(fmt.Sprintf("%s\n%s", sh.AdditionalPrefixJS, previewJS)), os.ModePerm)
 	if err != nil {
 		return
 	}
@@ -271,9 +305,9 @@ func (sh *Storybook) buildStorybook() (err error) {
 	return cmd.Run()
 }
 
-func NewHandler(name string, f interface{}, args ...Arg) http.Handler {
+func NewHandler(name string, f any, args ...Arg) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		argv := make([]interface{}, len(args))
+		argv := make([]any, len(args))
 		q := r.URL.Query()
 		for i, arg := range args {
 			argv[i] = arg.Get(q)
@@ -287,7 +321,7 @@ func NewHandler(name string, f interface{}, args ...Arg) http.Handler {
 	})
 }
 
-func executeTemplate(name string, fn interface{}, values []interface{}) (output templ.Component, err error) {
+func executeTemplate(name string, fn any, values []any) (output templ.Component, err error) {
 	v := reflect.ValueOf(fn)
 	t := v.Type()
 	argv := make([]reflect.Value, t.NumIn())
@@ -295,7 +329,7 @@ func executeTemplate(name string, fn interface{}, values []interface{}) (output 
 		err = fmt.Errorf("templ-storybook: component %s expects %d argument, but %d were provided", fn, len(argv), len(values))
 		return
 	}
-	for i := 0; i < len(argv); i++ {
+	for i := range argv {
 		argv[i] = reflect.ValueOf(values[i])
 	}
 	result := v.Call(argv)
@@ -315,7 +349,7 @@ func NewConf(title string, args ...Arg) *Conf {
 	c := &Conf{
 		Title: title,
 		Parameters: StoryParameters{
-			Server: map[string]interface{}{
+			Server: map[string]any{
 				"id": title,
 			},
 		},
@@ -325,7 +359,7 @@ func NewConf(title string, args ...Arg) *Conf {
 	}
 	for _, arg := range args {
 		c.Args.Add(arg.Name, arg.Value)
-		c.ArgTypes.Add(arg.Name, map[string]interface{}{
+		c.ArgTypes.Add(arg.Name, map[string]any{
 			"control": arg.Control,
 		})
 	}
@@ -340,7 +374,7 @@ func (c *Conf) AddStory(name string, args ...Arg) {
 	}
 	c.Stories = append(c.Stories, Story{
 		Name: name,
-		Args: NewSortedMap(),
+		Args: m,
 	})
 }
 
@@ -348,17 +382,17 @@ func (c *Conf) AddStory(name string, args ...Arg) {
 // See https://storybook.js.org/docs/react/essentials/controls
 type Arg struct {
 	Name    string
-	Value   interface{}
-	Control interface{}
-	Get     func(q url.Values) interface{}
+	Value   any
+	Control any
+	Get     func(q url.Values) any
 }
 
-func ObjectArg(name string, value interface{}, valuePtr interface{}) Arg {
+func ObjectArg(name string, value any, valuePtr any) Arg {
 	return Arg{
 		Name:    name,
 		Value:   value,
 		Control: "object",
-		Get: func(q url.Values) interface{} {
+		Get: func(q url.Values) any {
 			err := json.Unmarshal([]byte(q.Get(name)), valuePtr)
 			if err != nil {
 				return err
@@ -373,7 +407,7 @@ func TextArg(name, value string) Arg {
 		Name:    name,
 		Value:   value,
 		Control: "text",
-		Get: func(q url.Values) interface{} {
+		Get: func(q url.Values) any {
 			return q.Get(name)
 		},
 	}
@@ -384,7 +418,7 @@ func BooleanArg(name string, value bool) Arg {
 		Name:    name,
 		Value:   value,
 		Control: "boolean",
-		Get: func(q url.Values) interface{} {
+		Get: func(q url.Values) any {
 			return q.Get(name) == "true"
 		},
 	}
@@ -393,7 +427,7 @@ func BooleanArg(name string, value bool) Arg {
 type IntArgConf struct{ Min, Max, Step *int }
 
 func IntArg(name string, value int, conf IntArgConf) Arg {
-	control := map[string]interface{}{
+	control := map[string]any{
 		"type": "number",
 	}
 	if conf.Min != nil {
@@ -409,9 +443,12 @@ func IntArg(name string, value int, conf IntArgConf) Arg {
 		Name:    name,
 		Value:   value,
 		Control: control,
-		Get: func(q url.Values) interface{} {
-			i, _ := strconv.ParseInt(q.Get(name), 10, 64)
-			return int(i)
+		Get: func(q url.Values) any {
+			i64, err := strconv.ParseInt(q.Get(name), 10, 64)
+			if err != nil || i64 < math.MinInt || i64 > math.MaxInt {
+				return 0
+			}
+			return int(i64)
 		},
 	}
 	return arg
@@ -421,13 +458,13 @@ func FloatArg(name string, value float64, min, max, step float64) Arg {
 	return Arg{
 		Name:  name,
 		Value: value,
-		Control: map[string]interface{}{
+		Control: map[string]any{
 			"type": "number",
 			"min":  min,
 			"max":  max,
 			"step": step,
 		},
-		Get: func(q url.Values) interface{} {
+		Get: func(q url.Values) any {
 			i, _ := strconv.ParseFloat(q.Get(name), 64)
 			return i
 		},
@@ -443,24 +480,24 @@ type Conf struct {
 }
 
 type StoryParameters struct {
-	Server map[string]interface{} `json:"server"`
+	Server map[string]any `json:"server"`
 }
 
 func NewSortedMap() *SortedMap {
 	return &SortedMap{
 		m:        new(sync.Mutex),
-		internal: map[string]interface{}{},
+		internal: map[string]any{},
 		keys:     []string{},
 	}
 }
 
 type SortedMap struct {
 	m        *sync.Mutex
-	internal map[string]interface{}
+	internal map[string]any
 	keys     []string
 }
 
-func (sm *SortedMap) Add(key string, value interface{}) {
+func (sm *SortedMap) Add(key string, value any) {
 	sm.m.Lock()
 	defer sm.m.Unlock()
 	sm.keys = append(sm.keys, key)
@@ -498,6 +535,6 @@ func (sm *SortedMap) MarshalJSON() (output []byte, err error) {
 }
 
 type Story struct {
-	Name string `json:"name"`
-	Args *SortedMap
+	Name string     `json:"name"`
+	Args *SortedMap `json:"args"`
 }

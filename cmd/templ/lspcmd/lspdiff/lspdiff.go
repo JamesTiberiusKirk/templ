@@ -1,7 +1,7 @@
 package lspdiff
 
 import (
-	"github.com/a-h/protocol"
+	"github.com/a-h/templ/lsp/protocol"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 )
@@ -15,10 +15,18 @@ func Hover(expected, actual protocol.Hover) string {
 	)
 }
 
+func CodeAction(expected, actual []protocol.CodeAction) string {
+	return cmp.Diff(expected, actual)
+}
+
 func CompletionList(expected, actual *protocol.CompletionList) string {
 	return cmp.Diff(expected, actual,
 		cmpopts.IgnoreFields(protocol.CompletionList{}, "IsIncomplete"),
 	)
+}
+
+func References(expected, actual []protocol.Location) string {
+	return cmp.Diff(expected, actual)
 }
 
 func CompletionListContainsText(cl *protocol.CompletionList, text string) bool {

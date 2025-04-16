@@ -1,3 +1,4 @@
+#!/bin/bash
 echo If
 go test -fuzz=FuzzIf -fuzztime=120s
 echo For
@@ -8,6 +9,8 @@ echo Case
 go test -fuzz=FuzzCaseStandard -fuzztime=120s
 echo Default
 go test -fuzz=FuzzCaseDefault -fuzztime=120s
+echo TemplExpression
+go test -fuzz=FuzzTemplExpression -fuzztime=120s
 echo Expression
 go test -fuzz=FuzzExpression -fuzztime=120s
 echo SliceArgs

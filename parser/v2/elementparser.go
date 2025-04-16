@@ -16,10 +16,12 @@ type elementOpenTag struct {
 	Name        string
 	Attributes  []Attribute
 	IndentAttrs bool
+	NameRange   Range
+	Void        bool
 }
 
 var elementOpenTagParser = parse.Func(func(pi *parse.Input) (e elementOpenTag, ok bool, err error) {
-	start := pi.Index()
+	start := pi.Position()
 
 	// <
 	if _, ok, err = lt.Parse(pi); err != nil || !ok {
@@ -29,12 +31,13 @@ var elementOpenTagParser = parse.Func(func(pi *parse.Input) (e elementOpenTag, o
 	// Element name.
 	l := pi.Position().Line
 	if e.Name, ok, err = elementNameParser.Parse(pi); err != nil || !ok {
-		pi.Seek(start)
+		pi.Seek(start.Index)
 		return
 	}
+	e.NameRange = NewRange(pi.PositionAt(pi.Index()-len(e.Name)), pi.Position())
 
 	if e.Attributes, ok, err = (attributesParser{}).Parse(pi); err != nil || !ok {
-		pi.Seek(start)
+		pi.Seek(start.Index)
 		return
 	}
 
@@ -45,7 +48,16 @@ var elementOpenTagParser = parse.Func(func(pi *parse.Input) (e elementOpenTag, o
 
 	// Optional whitespace.
 	if _, _, err = parse.OptionalWhitespace.Parse(pi); err != nil {
-		pi.Seek(start)
+		pi.Seek(start.Index)
+		return
+	}
+
+	// />
+	if _, ok, err = parse.String("/>").Parse(pi); err != nil {
+		return
+	}
+	if ok {
+		e.Void = true
 		return
 	}
 
@@ -53,30 +65,14 @@ var elementOpenTagParser = parse.Func(func(pi *parse.Input) (e elementOpenTag, o
 	if _, ok, err = gt.Parse(pi); err != nil {
 		return
 	}
+
+	// If it's not a self-closing or complete open element, we have an error.
 	if !ok {
 		err = parse.Error(fmt.Sprintf("<%s>: malformed open element", e.Name), pi.Position())
-		return e, false, err
+		return
 	}
 
 	return e, true, nil
-})
-
-// Element close tag.
-type elementCloseTag struct {
-	Name string
-}
-
-var elementCloseTagParser = parse.Func(func(in *parse.Input) (ct elementCloseTag, ok bool, err error) {
-	var parts []string
-	parts, ok, err = parse.All(
-		parse.String("</"),
-		elementNameParser,
-		parse.Rune('>')).Parse(in)
-	if err != nil || !ok {
-		return
-	}
-	ct.Name = parts[1]
-	return ct, true, nil
 })
 
 // Attribute name.
@@ -102,11 +98,41 @@ var (
 	})
 )
 
+type attributeValueParser struct {
+	EqualsAndQuote parse.Parser[string]
+	Suffix         parse.Parser[string]
+	UseSingleQuote bool
+}
+
+func (avp attributeValueParser) Parse(pi *parse.Input) (value string, ok bool, err error) {
+	start := pi.Index()
+	if _, ok, err = avp.EqualsAndQuote.Parse(pi); err != nil || !ok {
+		return
+	}
+	if value, ok, err = parse.StringUntil(avp.Suffix).Parse(pi); err != nil || !ok {
+		pi.Seek(start)
+		return
+	}
+	if _, ok, err = avp.Suffix.Parse(pi); err != nil || !ok {
+		pi.Seek(start)
+		return
+	}
+	return value, true, nil
+}
+
 // Constant attribute.
 var (
-	attributeConstantValueParser            = parse.StringUntil(parse.Rune('"'))
-	attributeConstantValueSingleQuoteParser = parse.StringUntil(parse.Rune('\''))
-	constantAttributeParser                 = parse.Func(func(pi *parse.Input) (attr ConstantAttribute, ok bool, err error) {
+	attributeValueParsers = []attributeValueParser{
+		// Double quoted.
+		{EqualsAndQuote: parse.String(`="`), Suffix: parse.String(`"`), UseSingleQuote: false},
+		// Single quoted.
+		{EqualsAndQuote: parse.String(`='`), Suffix: parse.String(`'`), UseSingleQuote: true},
+		// Unquoted.
+		// A valid unquoted attribute value in HTML is any string of text that is not an empty string,
+		// and that doesn’t contain spaces, tabs, line feeds, form feeds, carriage returns, ", ', `, =, <, or >.
+		{EqualsAndQuote: parse.String("="), Suffix: parse.Any(parse.RuneIn(" \t\n\r\"'`=<>/"), parse.EOF[string]()), UseSingleQuote: false},
+	}
+	constantAttributeParser = parse.Func(func(pi *parse.Input) (attr ConstantAttribute, ok bool, err error) {
 		start := pi.Index()
 
 		// Optional whitespace leader.
@@ -119,39 +145,32 @@ var (
 			pi.Seek(start)
 			return
 		}
+		attr.NameRange = NewRange(pi.PositionAt(pi.Index()-len(attr.Name)), pi.Position())
 
-		// ="
-		result, ok, err := parse.Or(parse.String(`="`), parse.String(`='`)).Parse(pi)
-		if err != nil || !ok {
-			pi.Seek(start)
-			return
+		for _, p := range attributeValueParsers {
+			attr.Value, ok, err = p.Parse(pi)
+			if err != nil {
+				pos := pi.Position()
+				if pErr, isParseError := err.(parse.ParseError); isParseError {
+					pos = pErr.Pos
+				}
+				return attr, false, parse.Error(fmt.Sprintf("%s: %v", attr.Name, err), pos)
+			}
+			if ok {
+				attr.SingleQuote = p.UseSingleQuote
+				break
+			}
 		}
 
-		valueParser := attributeConstantValueParser
-		closeParser := parse.String(`"`)
-		if result.B.OK {
-			valueParser = attributeConstantValueSingleQuoteParser
-			closeParser = parse.String(`'`)
-			attr.SingleQuote = true
-		}
-
-		// Attribute value.
-		if attr.Value, ok, err = valueParser.Parse(pi); err != nil || !ok {
+		if !ok {
 			pi.Seek(start)
-			return
+			return attr, false, nil
 		}
 
 		attr.Value = html.UnescapeString(attr.Value)
-		// Only use single quotes if actually required, due to double quote in the value (prefer double quotes).
-		if attr.SingleQuote && !strings.Contains(attr.Value, "\"") {
-			attr.SingleQuote = false
-		}
 
-		// " - closing quote.
-		if _, ok, err = closeParser.Parse(pi); err != nil || !ok {
-			err = parse.Error(fmt.Sprintf("missing closing quote on attribute %q", attr.Name), pi.Position())
-			return
-		}
+		// Only use single quotes if actually required, due to double quote in the value (prefer double quotes).
+		attr.SingleQuote = attr.SingleQuote && strings.Contains(attr.Value, "\"")
 
 		return attr, true, nil
 	})
@@ -171,6 +190,7 @@ var boolConstantAttributeParser = parse.Func(func(pi *parse.Input) (attr BoolCon
 		pi.Seek(start)
 		return
 	}
+	attr.NameRange = NewRange(pi.PositionAt(pi.Index()-len(attr.Name)), pi.Position())
 
 	// We have a name, but if we have an equals sign, it's not a constant boolean attribute.
 	next, ok := pi.Peek(1)
@@ -208,6 +228,7 @@ var boolExpressionAttributeParser = parse.Func(func(pi *parse.Input) (r BoolExpr
 		pi.Seek(start)
 		return
 	}
+	r.NameRange = NewRange(pi.PositionAt(pi.Index()-len(r.Name)), pi.Position())
 
 	// Check whether this is a boolean expression attribute.
 	if _, ok, err = boolExpressionStart.Parse(pi); err != nil || !ok {
@@ -243,6 +264,7 @@ var expressionAttributeParser = parse.Func(func(pi *parse.Input) (attr Expressio
 		pi.Seek(start)
 		return
 	}
+	attr.NameRange = NewRange(pi.PositionAt(pi.Index()-len(attr.Name)), pi.Position())
 
 	// ={
 	if _, ok, err = parse.Or(parse.String("={ "), parse.String("={")).Parse(pi); err != nil || !ok {
@@ -355,7 +377,7 @@ func (attributesParser) Parse(in *parse.Input) (attributes []Attribute, ok bool,
 // Element name.
 var (
 	elementNameFirst      = "abcdefghijklmnopqrstuvwxyz"
-	elementNameSubsequent = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+	elementNameSubsequent = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:"
 	elementNameParser     = parse.Func(func(in *parse.Input) (name string, ok bool, err error) {
 		start := in.Index()
 		var prefix, suffix string
@@ -375,12 +397,43 @@ var (
 	})
 )
 
+// Void element closer.
+var voidElementCloser voidElementCloserParser
+
+type voidElementCloserParser struct{}
+
+var voidElementCloseTags = []string{"</area>", "</base>", "</br>", "</col>", "</command>", "</embed>", "</hr>", "</img>", "</input>", "</keygen>", "</link>", "</meta>", "</param>", "</source>", "</track>", "</wbr>"}
+
+func (voidElementCloserParser) Parse(pi *parse.Input) (n Node, ok bool, err error) {
+	var ve string
+	for _, ve = range voidElementCloseTags {
+		s, canPeekLen := pi.Peek(len(ve))
+		if !canPeekLen {
+			continue
+		}
+		if !strings.EqualFold(s, ve) {
+			continue
+		}
+		// Found a match.
+		ok = true
+		break
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	pi.Take(len(ve))
+	return nil, true, nil
+}
+
 // Element.
-var elementOpenClose elementOpenCloseParser
+var element elementParser
 
-type elementOpenCloseParser struct{}
+type elementParser struct{}
 
-func (elementOpenCloseParser) Parse(pi *parse.Input) (r Element, ok bool, err error) {
+func (elementParser) Parse(pi *parse.Input) (n Node, ok bool, err error) {
+	var r Element
+	start := pi.Position()
+
 	// Check the open tag.
 	var ot elementOpenTag
 	if ot, ok, err = elementOpenTagParser.Parse(pi); err != nil || !ok {
@@ -389,86 +442,59 @@ func (elementOpenCloseParser) Parse(pi *parse.Input) (r Element, ok bool, err er
 	r.Name = ot.Name
 	r.Attributes = ot.Attributes
 	r.IndentAttrs = ot.IndentAttrs
+	r.NameRange = ot.NameRange
+
+	if r.Name == "script" {
+		// Script elements have special handling.
+		pi.Seek(start.Index)
+		return n, false, nil
+	}
 
 	// Once we've got an open tag, the rest must be present.
 	l := pi.Position().Line
-	var nodes Nodes
-	if nodes, ok, err = newTemplateNodeParser[any](nil, "").Parse(pi); err != nil || !ok {
-		return
+
+	// If the element is self-closing, even if it's not really a void element (br, hr etc.), we can return early.
+	if ot.Void || r.IsVoidElement() {
+		// Escape early, no need to try to parse children for self-closing elements.
+		return addTrailingSpaceAndValidate(start, r, pi)
+	}
+
+	// Parse children.
+	closer := StripType(parse.All(parse.String("</"), parse.String(ot.Name), parse.Rune('>')))
+	tnp := newTemplateNodeParser(closer, fmt.Sprintf("<%s>: close tag", ot.Name))
+	nodes, _, err := tnp.Parse(pi)
+	if err != nil {
+		notFoundErr, isNotFoundError := err.(UntilNotFoundError)
+		if isNotFoundError {
+			err = notFoundErr.ParseError
+		}
+		return r, false, err
 	}
 	r.Children = nodes.Nodes
-	// If the children are not all on the same line, indent them
+	// If the children are not all on the same line, indent them.
 	if l != pi.Position().Line {
 		r.IndentChildren = true
 	}
 
 	// Close tag.
-	pos := pi.Position()
-	var ct elementCloseTag
-	ct, ok, err = elementCloseTagParser.Parse(pi)
+	_, ok, err = closer.Parse(pi)
 	if err != nil {
-		return
+		return r, false, err
 	}
 	if !ok {
 		err = parse.Error(fmt.Sprintf("<%s>: expected end tag not present or invalid tag contents", r.Name), pi.Position())
-		return
-	}
-	if ct.Name != r.Name {
-		err = parse.Error(fmt.Sprintf("<%s>: mismatched end tag, expected '</%s>', got '</%s>'", r.Name, r.Name, ct.Name), pos)
-		return
-	}
-
-	// Parse trailing whitespace.
-	ws, _, err := parse.Whitespace.Parse(pi)
-	if err != nil {
-		return r, false, err
-	}
-	r.TrailingSpace, err = NewTrailingSpace(ws)
-	if err != nil {
 		return r, false, err
 	}
 
-	return r, true, nil
+	return addTrailingSpaceAndValidate(start, r, pi)
 }
 
-// Element self-closing tag.
-var selfClosingElement = parse.Func(func(pi *parse.Input) (e Element, ok bool, err error) {
-	start := pi.Index()
-
-	// lt
-	if _, ok, err = lt.Parse(pi); err != nil || !ok {
-		return
+func addTrailingSpaceAndValidate(start parse.Position, e Element, pi *parse.Input) (n Node, ok bool, err error) {
+	// Elide any void close tags.
+	if _, _, err = voidElementCloser.Parse(pi); err != nil {
+		return e, false, err
 	}
-
-	// Element name.
-	l := pi.Position().Line
-	if e.Name, ok, err = elementNameParser.Parse(pi); err != nil || !ok {
-		pi.Seek(start)
-		return
-	}
-
-	if e.Attributes, ok, err = (attributesParser{}).Parse(pi); err != nil || !ok {
-		pi.Seek(start)
-		return
-	}
-
-	// Optional whitespace.
-	if _, _, err = parse.OptionalWhitespace.Parse(pi); err != nil {
-		pi.Seek(start)
-		return
-	}
-
-	// If any attribute is not on the same line as the element name, indent them.
-	if pi.Position().Line != l {
-		e.IndentAttrs = true
-	}
-
-	if _, ok, err = parse.String("/>").Parse(pi); err != nil || !ok {
-		pi.Seek(start)
-		return
-	}
-
-	// Parse trailing whitespace.
+	// Add trailing space.
 	ws, _, err := parse.Whitespace.Parse(pi)
 	if err != nil {
 		return e, false, err
@@ -478,25 +504,12 @@ var selfClosingElement = parse.Func(func(pi *parse.Input) (e Element, ok bool, e
 		return e, false, err
 	}
 
-	return e, true, nil
-})
-
-// Element
-var element elementParser
-
-type elementParser struct{}
-
-func (elementParser) Parse(pi *parse.Input) (n Node, ok bool, err error) {
-	start := pi.Position()
-
-	var r Element
-	if r, ok, err = parse.Any[Element](selfClosingElement, elementOpenClose).Parse(pi); err != nil || !ok {
-		return
-	}
+	// Validate.
 	var msgs []string
-	if msgs, ok = r.Validate(); !ok {
-		err = parse.Error(fmt.Sprintf("<%s>: %s", r.Name, strings.Join(msgs, ", ")), start)
+	if msgs, ok = e.Validate(); !ok {
+		err = parse.Error(fmt.Sprintf("<%s>: %s", e.Name, strings.Join(msgs, ", ")), start)
+		return e, false, err
 	}
 
-	return r, ok, err
+	return e, true, nil
 }

@@ -105,7 +105,12 @@ func TestTemplElementExpressionParser(t *testing.T) {
 				},
 				Children: []Node{
 					Whitespace{Value: "\n\t"},
-					Text{Value: "some words",
+					Text{
+						Value: "some words",
+						Range: Range{
+							From: Position{Index: 18, Line: 1, Col: 1},
+							To:   Position{Index: 28, Line: 1, Col: 11},
+						},
 						TrailingSpace: SpaceVertical,
 					},
 				},
@@ -134,12 +139,21 @@ func TestTemplElementExpressionParser(t *testing.T) {
 				},
 				Children: []Node{
 					Whitespace{Value: "\n\t\t\t"},
-					Element{Name: "a", Attributes: []Attribute{
-						ConstantAttribute{
-							Name:  "href",
-							Value: "someurl",
+					Element{Name: "a",
+						NameRange: Range{
+							From: Position{Index: 20, Line: 1, Col: 4},
+							To:   Position{Index: 21, Line: 1, Col: 5},
 						},
-					},
+						Attributes: []Attribute{
+							ConstantAttribute{
+								Name:  "href",
+								Value: "someurl",
+								NameRange: Range{
+									From: Position{Index: 22, Line: 1, Col: 6},
+									To:   Position{Index: 26, Line: 1, Col: 10},
+								},
+							},
+						},
 						TrailingSpace: SpaceVertical,
 					},
 				},
@@ -380,10 +394,39 @@ func TestTemplElementExpressionParser(t *testing.T) {
 					Whitespace{Value: "\n  "},
 					Element{
 						Name: "div",
+						NameRange: Range{
+							From: Position{Index: 39, Line: 1, Col: 3},
+							To:   Position{Index: 42, Line: 1, Col: 6},
+						},
 						Children: []Node{
-							Text{Value: "hello"},
+							Text{
+								Value: "hello",
+								Range: Range{
+									From: Position{Index: 43, Line: 1, Col: 7},
+									To:   Position{Index: 48, Line: 1, Col: 12},
+								},
+							},
 						},
 						TrailingSpace: SpaceVertical,
+					},
+				},
+			},
+		},
+		{
+			name: "templelement: arguments can receive a slice of complex types",
+			input: `@tabs([]*TabData{
+  {Name: "A"},
+  {Name: "B"},
+})`,
+			expected: TemplElementExpression{
+				Expression: Expression{
+					Value: `tabs([]*TabData{
+  {Name: "A"},
+  {Name: "B"},
+})`,
+					Range: Range{
+						From: Position{1, 0, 1},
+						To:   Position{50, 3, 2},
 					},
 				},
 			},
@@ -402,6 +445,39 @@ func TestTemplElementExpressionParser(t *testing.T) {
 			}
 			if diff := cmp.Diff(tt.expected, actual); diff != "" {
 				t.Error(diff)
+			}
+		})
+	}
+}
+
+func TestTemplElementExpressionParserFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name: "templelement: missing closing brace",
+			input: `@SplitRule(types.GroupMember{
+    UserID:   uuid.NewString(),
+    Username: "user me",
+}, []types.GroupMember{
+    {
+    UserID:   uuid.NewString(),
+    Username: "user 1",
+    },
+`,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			input := parse.NewInput(tt.input)
+			_, ok, err := templElementExpression.Parse(input)
+			if err == nil {
+				t.Fatalf("expected an error")
+			}
+			if ok {
+				t.Fatalf("expected a failure")
 			}
 		})
 	}

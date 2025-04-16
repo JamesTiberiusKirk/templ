@@ -59,7 +59,11 @@ type templateNodeParser[TUntil any] struct {
 	untilName string
 }
 
-var rawElements = parse.Any[Node](styleElement, scriptElement)
+var rawElements = parse.Any(styleElement, scriptElement)
+
+var templateNodeSkipParsers = []parse.Parser[Node]{
+	voidElementCloser, // </br>, </img> etc. - should be ignored.
+}
 
 var templateNodeParsers = []parse.Parser[Node]{
 	docType,                // <!DOCTYPE html>
@@ -73,12 +77,14 @@ var templateNodeParsers = []parse.Parser[Node]{
 	callTemplateExpression, // {! TemplateName(a, b, c) }
 	templElementExpression, // @TemplateName(a, b, c) { <div>Children</div> }
 	childrenExpression,     // { children... }
+	goCode,                 // {{ myval := x.myval }}
 	stringExpression,       // { "abc" }
 	whitespaceExpression,   // { " " }
 	textParser,             // anything &amp; everything accepted...
 }
 
 func (p templateNodeParser[T]) Parse(pi *parse.Input) (op Nodes, ok bool, err error) {
+outer:
 	for {
 		// Check if we've reached the end.
 		if p.until != nil {
@@ -90,6 +96,17 @@ func (p templateNodeParser[T]) Parse(pi *parse.Input) (op Nodes, ok bool, err er
 			if ok {
 				pi.Seek(start)
 				return op, true, nil
+			}
+		}
+
+		// Skip any nodes that we don't care about.
+		for _, p := range templateNodeSkipParsers {
+			_, matched, err := p.Parse(pi)
+			if err != nil {
+				return Nodes{}, false, err
+			}
+			if matched {
+				continue outer
 			}
 		}
 
@@ -118,9 +135,15 @@ func (p templateNodeParser[T]) Parse(pi *parse.Input) (op Nodes, ok bool, err er
 			break
 		}
 
-		err = fmt.Errorf("%v not found", p.untilName)
+		err = UntilNotFoundError{
+			ParseError: parse.Error(fmt.Sprintf("%v not found", p.untilName), pi.Position()),
+		}
 		return
 	}
 
 	return op, true, nil
+}
+
+type UntilNotFoundError struct {
+	parse.ParseError
 }

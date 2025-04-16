@@ -1,6 +1,6 @@
 package proxy
 
-import lsp "github.com/a-h/protocol"
+import lsp "github.com/a-h/templ/lsp/protocol"
 
 var htmlSnippets = []lsp.CompletionItem{
 	{
@@ -94,6 +94,17 @@ var htmlSnippets = []lsp.CompletionItem{
 	{
 		Label:            "h6",
 		InsertText:       `h6>${0}</h6>`,
+		Kind:             lsp.CompletionItemKind(lsp.CompletionItemKindSnippet),
+		InsertTextFormat: lsp.InsertTextFormatSnippet,
+	},
+}
+
+var snippet = []lsp.CompletionItem{
+	{
+		Label: "templ",
+		InsertText: `templ ${2:TemplateName}() {
+	${0}
+}`,
 		Kind:             lsp.CompletionItemKind(lsp.CompletionItemKindSnippet),
 		InsertTextFormat: lsp.InsertTextFormatSnippet,
 	},

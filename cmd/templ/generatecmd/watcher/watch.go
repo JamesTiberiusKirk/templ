@@ -2,19 +2,21 @@ package watcher
 
 import (
 	"context"
+	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"sync"
 	"time"
 
+	"github.com/a-h/templ/internal/skipdir"
 	"github.com/fsnotify/fsnotify"
 )
 
 func Recursive(
 	ctx context.Context,
 	path string,
+	watchPattern *regexp.Regexp,
 	out chan fsnotify.Event,
 	errors chan error,
 ) (w *RecursiveWatcher, err error) {
@@ -22,58 +24,57 @@ func Recursive(
 	if err != nil {
 		return nil, err
 	}
-	w = &RecursiveWatcher{
-		ctx:    ctx,
-		w:      fsnw,
-		Events: out,
-		Errors: errors,
-		timers: make(map[timerKey]*time.Timer),
-	}
+	w = NewRecursiveWatcher(ctx, fsnw, watchPattern, out, errors)
 	go w.loop()
 	return w, w.Add(path)
 }
 
+func NewRecursiveWatcher(ctx context.Context, w *fsnotify.Watcher, watchPattern *regexp.Regexp, events chan fsnotify.Event, errors chan error) *RecursiveWatcher {
+	return &RecursiveWatcher{
+		ctx:          ctx,
+		w:            w,
+		WatchPattern: watchPattern,
+		Events:       events,
+		Errors:       errors,
+		timers:       make(map[timerKey]*time.Timer),
+	}
+}
+
 // WalkFiles walks the file tree rooted at path, sending a Create event for each
 // file it encounters.
-func WalkFiles(ctx context.Context, path string, out chan fsnotify.Event) (err error) {
-	return filepath.WalkDir(path, func(path string, info os.DirEntry, err error) error {
+func WalkFiles(ctx context.Context, path string, watchPattern *regexp.Regexp, out chan fsnotify.Event) (err error) {
+	rootPath := path
+	fileSystem := os.DirFS(rootPath)
+	return fs.WalkDir(fileSystem, ".", func(path string, info os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if info.IsDir() && shouldSkipDir(path) {
+		absPath, err := filepath.Abs(filepath.Join(rootPath, path))
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() && skipdir.ShouldSkip(absPath) {
 			return filepath.SkipDir
 		}
-		if !shouldIncludeFile(path) {
+		if !watchPattern.MatchString(absPath) {
 			return nil
 		}
 		out <- fsnotify.Event{
-			Name: path,
+			Name: absPath,
 			Op:   fsnotify.Create,
 		}
 		return nil
 	})
 }
 
-func shouldIncludeFile(name string) bool {
-	if strings.HasSuffix(name, ".templ") {
-		return true
-	}
-	if strings.HasSuffix(name, "_templ.go") {
-		return true
-	}
-	if strings.HasSuffix(name, "_templ.txt") {
-		return true
-	}
-	return false
-}
-
 type RecursiveWatcher struct {
-	ctx     context.Context
-	w       *fsnotify.Watcher
-	Events  chan fsnotify.Event
-	Errors  chan error
-	timerMu sync.Mutex
-	timers  map[timerKey]*time.Timer
+	ctx          context.Context
+	w            *fsnotify.Watcher
+	WatchPattern *regexp.Regexp
+	Events       chan fsnotify.Event
+	Errors       chan error
+	timerMu      sync.Mutex
+	timers       map[timerKey]*time.Timer
 }
 
 type timerKey struct {
@@ -107,7 +108,7 @@ func (w *RecursiveWatcher) loop() {
 				}
 			}
 			// Only notify on templ related files.
-			if !shouldIncludeFile(event.Name) {
+			if !w.WatchPattern.MatchString(event.Name) {
 				continue
 			}
 			tk := timerKeyFromEvent(event)
@@ -141,24 +142,9 @@ func (w *RecursiveWatcher) Add(dir string) error {
 		if !info.IsDir() {
 			return nil
 		}
-		if shouldSkipDir(dir) {
+		if skipdir.ShouldSkip(dir) {
 			return filepath.SkipDir
 		}
 		return w.w.Add(dir)
 	})
-}
-
-func shouldSkipDir(dir string) bool {
-	if dir == "." {
-		return false
-	}
-	if dir == "vendor" || dir == "node_modules" {
-		return true
-	}
-	_, name := path.Split(dir)
-	// These directories are ignored by the Go tool.
-	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
-		return true
-	}
-	return false
 }

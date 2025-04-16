@@ -11,7 +11,7 @@ func TestForExpressionParser(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		expected interface{}
+		expected any
 	}{
 		{
 			name: "for: simple",
@@ -38,6 +38,10 @@ func TestForExpressionParser(t *testing.T) {
 					Whitespace{Value: "\t\t\t\t\t"},
 					Element{
 						Name: "div",
+						NameRange: Range{
+							From: Position{Index: 37, Line: 1, Col: 6},
+							To:   Position{Index: 40, Line: 1, Col: 9},
+						},
 						Children: []Node{
 							StringExpression{
 								Expression: Expression{
@@ -87,6 +91,10 @@ func TestForExpressionParser(t *testing.T) {
 					Whitespace{Value: "\t\t\t\t\t"},
 					Element{
 						Name: "div",
+						NameRange: Range{
+							From: Position{Index: 36, Line: 1, Col: 6},
+							To:   Position{Index: 39, Line: 1, Col: 9},
+						},
 						Children: []Node{
 							StringExpression{
 								Expression: Expression{
@@ -132,10 +140,13 @@ func TestForExpressionParser(t *testing.T) {
 
 func TestIncompleteFor(t *testing.T) {
 	t.Run("no opening brace", func(t *testing.T) {
-		input := parse.NewInput(`for with no brace`)
-		_, _, err := forExpression.Parse(input)
-		if err.Error() != "for: unterminated (missing closing '{\\n') - https://templ.guide/syntax-and-usage/statements#incomplete-statements: line 0, col 0" {
+		input := parse.NewInput(`for with no brace is ignored`)
+		_, ok, err := forExpression.Parse(input)
+		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if ok {
+			t.Fatal("expected a non match, but got a match")
 		}
 	})
 	t.Run("capitalised For", func(t *testing.T) {
@@ -145,7 +156,7 @@ func TestIncompleteFor(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if ok {
-			t.Fatal("expected a non match")
+			t.Fatal("expected a non match, but got a match")
 		}
 	})
 }

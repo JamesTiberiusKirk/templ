@@ -6,6 +6,8 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -16,9 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/a-h/templ/cmd/templ/generatecmd"
 	"github.com/a-h/templ/cmd/templ/generatecmd/modcheck"
+	"github.com/a-h/templ/internal/htmlfind"
+	"golang.org/x/net/html"
 )
 
 //go:embed testdata/*
@@ -74,12 +77,13 @@ func getPort() (port int, err error) {
 	return
 }
 
-func getHTML(url string) (doc *goquery.Document, err error) {
+func getHTML(url string) (n *html.Node, err error) {
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get %q: %w", url, err)
 	}
-	return goquery.NewDocumentFromReader(resp.Body)
+	defer resp.Body.Close()
+	return html.Parse(resp.Body)
 }
 
 func TestCanAccessDirect(t *testing.T) {
@@ -97,7 +101,11 @@ func TestCanAccessDirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read HTML: %v", err)
 	}
-	countText := doc.Find(`div[data-testid="count"]`).Text()
+	countElements := htmlfind.All(doc, htmlfind.Element("div", htmlfind.Attr("data-testid", "count")))
+	if len(countElements) != 1 {
+		t.Fatalf("expected 1 count element, got %d", len(countElements))
+	}
+	countText := countElements[0].FirstChild.Data
 	actualCount, err := strconv.Atoi(countText)
 	if err != nil {
 		t.Fatalf("got count %q instead of integer", countText)
@@ -122,7 +130,11 @@ func TestCanAccessViaProxy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read HTML: %v", err)
 	}
-	countText := doc.Find(`div[data-testid="count"]`).Text()
+	countElements := htmlfind.All(doc, htmlfind.Element("div", htmlfind.Attr("data-testid", "count")))
+	if len(countElements) != 1 {
+		t.Fatalf("expected 1 count element, got %d", len(countElements))
+	}
+	countText := countElements[0].FirstChild.Data
 	actualCount, err := strconv.Atoi(countText)
 	if err != nil {
 		t.Fatalf("got count %q instead of integer", countText)
@@ -193,7 +205,11 @@ func TestFileModificationsResultInSSEWithGzip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read HTML: %v", err)
 	}
-	if text := doc.Find(`div[data-testid="modification"]`).Text(); text != "Original" {
+	modified := htmlfind.All(doc, htmlfind.Element("div", htmlfind.Attr("data-testid", "modification")))
+	if len(modified) != 1 {
+		t.Fatalf("expected 1 modification element, got %d", len(modified))
+	}
+	if text := modified[0].FirstChild.Data; text != "Original" {
 		t.Errorf("expected %q, got %q", "Original", text)
 	}
 
@@ -234,7 +250,11 @@ loop:
 	if err != nil {
 		t.Fatalf("failed to read HTML: %v", err)
 	}
-	if text := doc.Find(`div[data-testid="modification"]`).Text(); text != "Updated" {
+	modified = htmlfind.All(doc, htmlfind.Element("div", htmlfind.Attr("data-testid", "modification")))
+	if len(modified) != 1 {
+		t.Fatalf("expected 1 modification element, got %d", len(modified))
+	}
+	if text := modified[0].FirstChild.Data; text != "Updated" {
 		t.Errorf("expected %q, got %q", "Updated", text)
 	}
 }
@@ -261,7 +281,11 @@ func TestFileModificationsResultInSSE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read HTML: %v", err)
 	}
-	if text := doc.Find(`div[data-testid="modification"]`).Text(); text != "Original" {
+	modified := htmlfind.All(doc, htmlfind.Element("div", htmlfind.Attr("data-testid", "modification")))
+	if len(modified) != 1 {
+		t.Fatalf("expected 1 modification element, got %d", len(modified))
+	}
+	if text := modified[0].FirstChild.Data; text != "Original" {
 		t.Errorf("expected %q, got %q", "Original", text)
 	}
 
@@ -302,19 +326,24 @@ loop:
 	if err != nil {
 		t.Fatalf("failed to read HTML: %v", err)
 	}
-	if text := doc.Find(`div[data-testid="modification"]`).Text(); text != "Updated" {
+	modified = htmlfind.All(doc, htmlfind.Element("div", htmlfind.Attr("data-testid", "modification")))
+	if len(modified) != 1 {
+		t.Fatalf("expected 1 modification element, got %d", len(modified))
+	}
+	if text := modified[0].FirstChild.Data; text != "Updated" {
 		t.Errorf("expected %q, got %q", "Updated", text)
 	}
 }
 
-func NewTestArgs(modRoot, appDir string, appPort int, proxyPort int) TestArgs {
+func NewTestArgs(modRoot, appDir string, appPort int, proxyBind string, proxyPort int) TestArgs {
 	return TestArgs{
 		ModRoot:   modRoot,
 		AppDir:    appDir,
 		AppPort:   appPort,
 		AppURL:    fmt.Sprintf("http://localhost:%d", appPort),
+		ProxyBind: proxyBind,
 		ProxyPort: proxyPort,
-		ProxyURL:  fmt.Sprintf("http://localhost:%d", proxyPort),
+		ProxyURL:  fmt.Sprintf("http://%s:%d", proxyBind, proxyPort),
 	}
 }
 
@@ -323,6 +352,7 @@ type TestArgs struct {
 	AppDir    string
 	AppPort   int
 	AppURL    string
+	ProxyBind string
 	ProxyPort int
 	ProxyURL  string
 }
@@ -349,8 +379,9 @@ func Setup(gzipEncoding bool) (args TestArgs, teardown func(t *testing.T), err e
 	if err != nil {
 		return args, teardown, fmt.Errorf("failed to get available port: %v", err)
 	}
+	proxyBind := "localhost"
 
-	args = NewTestArgs(moduleRoot, appDir, appPort, proxyPort)
+	args = NewTestArgs(moduleRoot, appDir, appPort, proxyBind, proxyPort)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var wg sync.WaitGroup
@@ -365,15 +396,23 @@ func Setup(gzipEncoding bool) (args TestArgs, teardown func(t *testing.T), err e
 			command += " -gzip true"
 		}
 
-		cmdErr = generatecmd.Run(ctx, os.Stdout, generatecmd.Arguments{
-			Path:              appDir,
-			Watch:             true,
-			Command:           command,
-			ProxyPort:         proxyPort,
-			Proxy:             args.AppURL,
-			IncludeVersion:    false,
-			IncludeTimestamp:  false,
-			KeepOrphanedFiles: false,
+		log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+		cmdErr = generatecmd.Run(ctx, log, generatecmd.Arguments{
+			Path:                            appDir,
+			Watch:                           true,
+			OpenBrowser:                     false,
+			Command:                         command,
+			ProxyBind:                       proxyBind,
+			ProxyPort:                       proxyPort,
+			Proxy:                           args.AppURL,
+			NotifyProxy:                     false,
+			WorkerCount:                     0,
+			GenerateSourceMapVisualisations: false,
+			IncludeVersion:                  false,
+			IncludeTimestamp:                false,
+			PPROFPort:                       0,
+			KeepOrphanedFiles:               false,
 		})
 	}()
 
@@ -381,12 +420,12 @@ func Setup(gzipEncoding bool) (args TestArgs, teardown func(t *testing.T), err e
 	if err = waitForURL(args.AppURL); err != nil {
 		cancel()
 		wg.Wait()
-		return args, teardown, fmt.Errorf("failed to start app server: %v", err)
+		return args, teardown, fmt.Errorf("failed to start app server, command error %v: %w", cmdErr, err)
 	}
 	if err = waitForURL(args.ProxyURL); err != nil {
 		cancel()
 		wg.Wait()
-		return args, teardown, fmt.Errorf("failed to start proxy server: %v", err)
+		return args, teardown, fmt.Errorf("failed to start proxy server, command error %v: %w", cmdErr, err)
 	}
 
 	// Wait for exit.
@@ -456,8 +495,10 @@ func TestGenerateReturnsErrors(t *testing.T) {
 		t.Errorf("failed to replace text in file: %v", err)
 	}
 
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
 	// Run.
-	err = generatecmd.Run(context.Background(), os.Stdout, generatecmd.Arguments{
+	err = generatecmd.Run(context.Background(), log, generatecmd.Arguments{
 		Path:              appDir,
 		Watch:             false,
 		IncludeVersion:    false,

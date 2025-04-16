@@ -38,6 +38,44 @@ Rendering the `page` component results in:
 String values are automatically HTML attribute encoded. This is a security measure, but may make the values (especially JSON appear) look strange to you, since some characters may be converted into HTML entities. However, it is correct HTML and won't affect the behavior. 
 :::
 
+It's also possible to use function calls in string attribute expressions.
+
+Here's a function that returns a string based on a boolean input.
+
+```go
+func testID(isTrue bool) string {
+    if isTrue {
+        return "testid-123"
+    }
+    return "testid-456"
+}
+```
+
+```templ
+templ component() {
+  <p data-testid={ testID(true) }>Text</p>
+}
+```
+
+The result:
+
+```html title="Output"
+<p data-testid="testid-123">Text</p>
+```
+
+Functions in string attribute expressions can also return errors.
+
+```go
+func testID(isTrue bool) (string, error) {
+    if isTrue {
+        return "testid-123", nil
+    }
+    return "", fmt.Errorf("isTrue is false")
+}
+```
+
+If the function returns an error, the `Render` method will return the error along with its location.
+
 ## Boolean attributes
 
 Boolean attributes (see https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#boolean-attributes) where the presence of an attribute name without a value means true, and the attribute name not being present means false are supported.
@@ -100,7 +138,7 @@ It's possible to spread any variable of type `templ.Attributes`. `templ.Attribut
 
 ```templ
 templ component(shouldBeUsed bool, attrs templ.Attributes) {
-  <p { attrs... }></p>
+  <p { attrs... }>Text</p>
   <hr
     if shouldBeUsed {
       { attrs... }
@@ -131,6 +169,20 @@ templ component(p Person) {
   <a href={ templ.URL(p.URL) }>{ strings.ToUpper(p.Name) }</a>
 }
 ```
+
+:::tip
+In templ, all attributes are HTML-escaped. This means that:
+
+- `&` characters in the URL are escaped to `&amp;`.
+- `"` characters are escaped to `&quot;`.
+- `'` characters are escaped to `&#39;`.
+
+This done to prevent XSS attacks. For example, without escaping, if a string contained `http://google.com" onclick="alert('hello')"`, the browser would interpret this as a URL followed by an `onclick` attribute, which would execute JavaScript code.
+
+The escaping does not change the URL's functionality.
+
+Sanitization is the process of examining the URL scheme (protocol) and structure to ensure that it's safe to use, e.g. that it doesn't contain `javascript:` or other potentially harmful schemes. If a URL is not safe, templ will replace the URL with `about:invalid#TemplFailedSanitizationURL`.
+:::
 
 The `templ.URL` function only supports standard HTML elements and attributes (`<a href=""` and `<form action=""`).
 
@@ -173,7 +225,7 @@ templ Button(text string) {
 ```
 
 ```html title="Output"
-<script type="text/javascript">
+<script>
  function __templ_withParameters_1056(a, b, c){console.log(a, b, c);}function __templ_withoutParameters_6bbf(){alert("hello");}
 </script>
 <button onclick="__templ_withParameters_1056("test","Say hello",123)" onmouseover="__templ_withoutParameters_6bbf()" type="button">
@@ -183,7 +235,7 @@ templ Button(text string) {
 
 ## CSS attributes
 
-CSS handling is discussed in detail in [CSS style management](css-style-management).
+CSS handling is discussed in detail in [CSS style management](/syntax-and-usage/css-style-management).
 
 ## JSON attributes
 
@@ -195,6 +247,8 @@ func countriesJSON() string {
 	bytes, _ := json.Marshal(countries)
 	return string(bytes)
 }
+```
+
 ```templ
 templ SearchBox() {
 	<search-webcomponent suggestions={ countriesJSON() } />

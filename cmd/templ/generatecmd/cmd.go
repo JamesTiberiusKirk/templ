@@ -7,12 +7,17 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	templruntime "github.com/a-h/templ/runtime"
 
 	"github.com/a-h/templ"
 	"github.com/a-h/templ/cmd/templ/generatecmd/modcheck"
@@ -25,7 +30,9 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-func NewGenerate(log *slog.Logger, args Arguments) (g *Generate) {
+const defaultWatchPattern = `(.+\.go$)|(.+\.templ$)`
+
+func NewGenerate(log *slog.Logger, args Arguments) (g *Generate, err error) {
 	g = &Generate{
 		Log:  log,
 		Args: &args,
@@ -33,25 +40,44 @@ func NewGenerate(log *slog.Logger, args Arguments) (g *Generate) {
 	if g.Args.WorkerCount == 0 {
 		g.Args.WorkerCount = runtime.NumCPU()
 	}
-	return g
+	if g.Args.WatchPattern == "" {
+		g.Args.WatchPattern = defaultWatchPattern
+	}
+	g.WatchPattern, err = regexp.Compile(g.Args.WatchPattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile watch pattern %q: %w", g.Args.WatchPattern, err)
+	}
+	return g, nil
 }
 
 type Generate struct {
-	Log  *slog.Logger
-	Args *Arguments
+	Log          *slog.Logger
+	Args         *Arguments
+	WatchPattern *regexp.Regexp
 }
 
 type GenerationEvent struct {
 	Event       fsnotify.Event
+	Updated     bool
 	GoUpdated   bool
 	TextUpdated bool
 }
 
 func (cmd Generate) Run(ctx context.Context) (err error) {
+	if cmd.Args.NotifyProxy {
+		return proxy.NotifyProxy(cmd.Args.ProxyBind, cmd.Args.ProxyPort)
+	}
 	if cmd.Args.Watch && cmd.Args.FileName != "" {
 		return fmt.Errorf("cannot watch a single file, remove the -f or -watch flag")
 	}
-
+	writingToWriter := cmd.Args.FileWriter != nil
+	if cmd.Args.FileName == "" && writingToWriter {
+		return fmt.Errorf("only a single file can be output to stdout, add the -f flag to specify the file to generate code for")
+	}
+	// Default to writing to files.
+	if cmd.Args.FileWriter == nil {
+		cmd.Args.FileWriter = FileWriter
+	}
 	if cmd.Args.PPROFPort > 0 {
 		go func() {
 			_ = http.ListenAndServe(fmt.Sprintf("localhost:%d", cmd.Args.PPROFPort), nil)
@@ -80,11 +106,21 @@ func (cmd Generate) Run(ctx context.Context) (err error) {
 		cmd.Log.Warn("templ version check: " + err.Error())
 	}
 
-	fseh := NewFSEventHandler(cmd.Log, cmd.Args.Path, cmd.Args.Watch, opts, cmd.Args.GenerateSourceMapVisualisations, cmd.Args.KeepOrphanedFiles)
+	cmd.Log.Debug("Creating filesystem event handler")
+	fseh := NewFSEventHandler(
+		cmd.Log,
+		cmd.Args.Path,
+		cmd.Args.Watch,
+		opts,
+		cmd.Args.GenerateSourceMapVisualisations,
+		cmd.Args.KeepOrphanedFiles,
+		cmd.Args.FileWriter,
+		cmd.Args.Lazy,
+	)
 
 	// If we're processing a single file, don't bother setting up the channels/multithreaing.
 	if cmd.Args.FileName != "" {
-		_, _, err = fseh.HandleEvent(ctx, fsnotify.Event{
+		_, err = fseh.HandleEvent(ctx, fsnotify.Event{
 			Name: cmd.Args.FileName,
 			Op:   fsnotify.Create,
 		})
@@ -97,7 +133,7 @@ func (cmd Generate) Run(ctx context.Context) (err error) {
 	// Create channels:
 	// For the initial filesystem walk and subsequent (optional) fsnotify events.
 	events := make(chan fsnotify.Event)
-	// count of events currently being processed by the event handler.
+	// Count of events currently being processed by the event handler.
 	var eventsWG sync.WaitGroup
 	// Used to check that the event handler has completed.
 	var eventHandlerWG sync.WaitGroup
@@ -119,8 +155,12 @@ func (cmd Generate) Run(ctx context.Context) (err error) {
 	go func() {
 		defer pushHandlerWG.Done()
 		defer close(events)
-		cmd.Log.Debug("Walking directory", slog.String("path", cmd.Args.Path), slog.Bool("devMode", cmd.Args.Watch))
-		if err := watcher.WalkFiles(ctx, cmd.Args.Path, events); err != nil {
+		cmd.Log.Debug(
+			"Walking directory",
+			slog.String("path", cmd.Args.Path),
+			slog.Bool("devMode", cmd.Args.Watch),
+		)
+		if err := watcher.WalkFiles(ctx, cmd.Args.Path, cmd.WatchPattern, events); err != nil {
 			cmd.Log.Error("WalkFiles failed, exiting", slog.Any("error", err))
 			errs <- FatalError{Err: fmt.Errorf("failed to walk files: %w", err)}
 			return
@@ -130,7 +170,7 @@ func (cmd Generate) Run(ctx context.Context) (err error) {
 			return
 		}
 		cmd.Log.Info("Watching files")
-		rw, err := watcher.Recursive(ctx, cmd.Args.Path, events, errs)
+		rw, err := watcher.Recursive(ctx, cmd.Args.Path, cmd.WatchPattern, events, errs)
 		if err != nil {
 			cmd.Log.Error("Recursive watcher setup failed, exiting", slog.Any("error", err))
 			errs <- FatalError{Err: fmt.Errorf("failed to setup recursive watcher: %w", err)}
@@ -144,16 +184,30 @@ func (cmd Generate) Run(ctx context.Context) (err error) {
 		}
 		cmd.Log.Debug("Waiting for events to be processed")
 		eventsWG.Wait()
-		cmd.Log.Debug("All pending events processed, waiting for pending post-generation events to complete")
+		cmd.Log.Debug(
+			"All pending events processed, waiting for pending post-generation events to complete",
+		)
 		postGenerationEventsWG.Wait()
-		cmd.Log.Debug("All post-generation events processed, running walk again, but in production mode", slog.Int64("errorCount", errorCount.Load()))
-		// Reset to reprocess all files in production mode.
-		fseh = NewFSEventHandler(cmd.Log, cmd.Args.Path, cmd.Args.Watch, opts, cmd.Args.GenerateSourceMapVisualisations, cmd.Args.KeepOrphanedFiles)
-		errorCount.Store(0)
-		if err := watcher.WalkFiles(ctx, cmd.Args.Path, events); err != nil {
-			cmd.Log.Error("Post dev mode WalkFiles failed", slog.Any("error", err))
-			errs <- FatalError{Err: fmt.Errorf("failed to walk files: %w", err)}
-			return
+		cmd.Log.Debug(
+			"All post-generation events processed, deleting watch mode text files",
+			slog.Int64("errorCount", errorCount.Load()),
+		)
+		fileEvents := make(chan fsnotify.Event)
+		go func() {
+			if err := watcher.WalkFiles(ctx, cmd.Args.Path, cmd.WatchPattern, fileEvents); err != nil {
+				cmd.Log.Error("Post dev mode WalkFiles failed", slog.Any("error", err))
+				errs <- FatalError{Err: fmt.Errorf("failed to walk files: %w", err)}
+				return
+			}
+			close(fileEvents)
+		}()
+		for event := range fileEvents {
+			if strings.HasSuffix(event.Name, "_templ.go") || strings.HasSuffix(event.Name, ".templ") {
+				watchModeFileName := templruntime.GetDevModeTextFileName(event.Name)
+				if err := os.Remove(watchModeFileName); err != nil && !errors.Is(err, os.ErrNotExist) {
+					cmd.Log.Warn("Failed to remove watch mode text file", slog.Any("error", err))
+				}
+			}
 		}
 	}()
 
@@ -171,18 +225,22 @@ func (cmd Generate) Run(ctx context.Context) (err error) {
 				cmd.Log.Debug("Processing file", slog.String("file", event.Name))
 				defer eventsWG.Done()
 				defer func() { <-sem }()
-				goUpdated, textUpdated, err := fseh.HandleEvent(ctx, event)
+				r, err := fseh.HandleEvent(ctx, event)
 				if err != nil {
-					cmd.Log.Error("Event handler failed", slog.Any("error", err))
 					errs <- err
 				}
-				if goUpdated || textUpdated {
-					postGeneration <- &GenerationEvent{
-						Event:       event,
-						GoUpdated:   goUpdated,
-						TextUpdated: textUpdated,
-					}
+				if !(r.GoUpdated || r.TextUpdated) {
+					cmd.Log.Debug("File not updated", slog.String("file", event.Name))
+					return
 				}
+				e := &GenerationEvent{
+					Event:       event,
+					Updated:     r.Updated,
+					GoUpdated:   r.GoUpdated,
+					TextUpdated: r.TextUpdated,
+				}
+				cmd.Log.Debug("File updated", slog.String("file", event.Name))
+				postGeneration <- e
 			}(event)
 		}
 		// Wait for all events to be processed before closing.
@@ -226,6 +284,9 @@ func (cmd Generate) Run(ctx context.Context) (err error) {
 				postGenerationEventsWG.Add(1)
 				if cmd.Args.Command != "" && goUpdated {
 					cmd.Log.Debug("Executing command", slog.String("command", cmd.Args.Command))
+					if cmd.Args.Watch {
+						os.Setenv("TEMPL_DEV_MODE", "true")
+					}
 					if _, err := run.Run(ctx, cmd.Args.Path, cmd.Args.Command); err != nil {
 						cmd.Log.Error("Error executing command", slog.Any("error", err))
 					}
@@ -284,7 +345,11 @@ func (cmd Generate) Run(ctx context.Context) (err error) {
 		return fmt.Errorf("generation completed with %d errors", errorCount.Load())
 	}
 
-	cmd.Log.Info("Complete", slog.Int("updates", updates), slog.Duration("duration", time.Since(start)))
+	cmd.Log.Info(
+		"Complete",
+		slog.Int("updates", updates),
+		slog.Duration("duration", time.Since(start)),
+	)
 	return nil
 }
 
@@ -301,10 +366,13 @@ func (cmd *Generate) StartProxy(ctx context.Context) (p *proxy.Handler, err erro
 	if cmd.Args.ProxyPort == 0 {
 		cmd.Args.ProxyPort = 7331
 	}
-	p = proxy.New(cmd.Args.ProxyPort, target)
+	if cmd.Args.ProxyBind == "" {
+		cmd.Args.ProxyBind = "127.0.0.1"
+	}
+	p = proxy.New(cmd.Log, cmd.Args.ProxyBind, cmd.Args.ProxyPort, target)
 	go func() {
 		cmd.Log.Info("Proxying", slog.String("from", p.URL), slog.String("to", p.Target.String()))
-		if err := http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", cmd.Args.ProxyPort), p); err != nil {
+		if err := http.ListenAndServe(fmt.Sprintf("%s:%d", cmd.Args.ProxyBind, cmd.Args.ProxyPort), p); err != nil {
 			cmd.Log.Error("Proxy failed", slog.Any("error", err))
 		}
 	}()
@@ -323,7 +391,11 @@ func (cmd *Generate) StartProxy(ctx context.Context) (p *proxy.Handler, err erro
 				break
 			}
 			d := backoff.NextBackOff()
-			cmd.Log.Debug("Proxy not ready, retrying", slog.String("url", p.URL), slog.Any("backoff", d))
+			cmd.Log.Debug(
+				"Proxy not ready, retrying",
+				slog.String("url", p.URL),
+				slog.Any("backoff", d),
+			)
 			time.Sleep(d)
 		}
 		if err := browser.OpenURL(p.URL); err != nil {

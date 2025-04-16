@@ -10,10 +10,6 @@ var styleElement = rawElementParser{
 	name: "style",
 }
 
-var scriptElement = rawElementParser{
-	name: "script",
-}
-
 type rawElementParser struct {
 	name string
 }
@@ -28,8 +24,14 @@ func (p rawElementParser) Parse(pi *parse.Input) (n Node, ok bool, err error) {
 
 	// Element name.
 	var e RawElement
-	if e.Name, ok, err = parse.String(p.name).Parse(pi); err != nil || !ok {
+	if e.Name, ok, err = elementNameParser.Parse(pi); err != nil || !ok {
 		pi.Seek(start)
+		return
+	}
+
+	if e.Name != p.name {
+		pi.Seek(start)
+		ok = false
 		return
 	}
 

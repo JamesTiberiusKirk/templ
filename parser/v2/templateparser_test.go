@@ -19,6 +19,10 @@ func TestTemplateParser(t *testing.T) {
 			input: `templ Name() {
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 16, Line: 1, Col: 1},
+				},
 				Expression: Expression{
 					Value: "Name()",
 					Range: Range{
@@ -41,6 +45,10 @@ func TestTemplateParser(t *testing.T) {
 			input: `templ (data Data) Name() {
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 28, Line: 1, Col: 1},
+				},
 				Expression: Expression{
 					Value: "(data Data) Name()",
 					Range: Range{
@@ -63,6 +71,10 @@ func TestTemplateParser(t *testing.T) {
 			input: `templ Name(){
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 15, Line: 1, Col: 1},
+				},
 				Expression: Expression{
 					Value: "Name()",
 					Range: Range{
@@ -85,6 +97,10 @@ func TestTemplateParser(t *testing.T) {
 			input: `templ Name(p Parameter) {
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 27, Line: 1, Col: 1},
+				},
 				Expression: Expression{
 					Value: "Name(p Parameter)",
 					Range: Range{
@@ -109,6 +125,10 @@ func TestTemplateParser(t *testing.T) {
 ) {
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 39, Line: 3, Col: 1},
+				},
 				Expression: Expression{
 					Value: "Multiline(\n\tparams expense,\n)",
 					Range: Range{
@@ -132,6 +152,10 @@ func TestTemplateParser(t *testing.T) {
 <span>{ "span content" }</span>
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 59, Line: 2, Col: 1},
+				},
 				Expression: Expression{
 					Value: "Name(p Parameter)",
 					Range: Range{
@@ -150,6 +174,10 @@ func TestTemplateParser(t *testing.T) {
 				Children: []Node{
 					Element{
 						Name: "span",
+						NameRange: Range{
+							From: Position{Index: 27, Line: 1, Col: 1},
+							To:   Position{Index: 31, Line: 1, Col: 5},
+						},
 						Children: []Node{
 							StringExpression{
 								Expression: Expression{
@@ -178,6 +206,10 @@ func TestTemplateParser(t *testing.T) {
 			name:  "template: containing element - no spacing",
 			input: `templ Name(p Parameter) { <span>{ "span content" }</span> }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 59, Line: 0, Col: 59},
+				},
 				Expression: Expression{
 					Value: "Name(p Parameter)",
 					Range: Range{
@@ -196,6 +228,10 @@ func TestTemplateParser(t *testing.T) {
 				Children: []Node{
 					Element{
 						Name: "span",
+						NameRange: Range{
+							From: Position{Index: 27, Line: 0, Col: 27},
+							To:   Position{Index: 31, Line: 0, Col: 31},
+						},
 						Children: []Node{
 							StringExpression{
 								Expression: Expression{
@@ -231,6 +267,10 @@ func TestTemplateParser(t *testing.T) {
 </div>
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 99, Line: 7, Col: 1},
+				},
 				Expression: Expression{
 					Value: "Name(p Parameter)",
 					Range: Range{
@@ -249,6 +289,10 @@ func TestTemplateParser(t *testing.T) {
 				Children: []Node{
 					Element{
 						Name: "div",
+						NameRange: Range{
+							From: Position{Index: 27, Line: 1, Col: 1},
+							To:   Position{Index: 30, Line: 1, Col: 4},
+						},
 						Children: []Node{
 							Whitespace{Value: "\n  "},
 							StringExpression{
@@ -271,6 +315,10 @@ func TestTemplateParser(t *testing.T) {
 							},
 							Element{
 								Name: "span",
+								NameRange: Range{
+									From: Position{Index: 55, Line: 3, Col: 3},
+									To:   Position{Index: 59, Line: 3, Col: 7},
+								},
 								Children: []Node{
 									Whitespace{Value: "\n\t"},
 									StringExpression{
@@ -312,6 +360,10 @@ func TestTemplateParser(t *testing.T) {
 	}
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 84, Line: 6, Col: 1},
+				},
 				Expression: Expression{
 					Value: "Name(p Parameter)",
 					Range: Range{
@@ -349,6 +401,10 @@ func TestTemplateParser(t *testing.T) {
 							Whitespace{Value: "\t\t"},
 							Element{
 								Name: "span",
+								NameRange: Range{
+									From: Position{Index: 42, Line: 2, Col: 3},
+									To:   Position{Index: 46, Line: 2, Col: 7},
+								},
 								Children: []Node{
 									Whitespace{"\n\t\t\t"},
 									StringExpression{
@@ -388,6 +444,10 @@ func TestTemplateParser(t *testing.T) {
 	<input type="text" value="b" />
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 93, Line: 3, Col: 1},
+				},
 				Expression: Expression{
 					Value: "Name(p Parameter)",
 					Range: Range{
@@ -407,17 +467,53 @@ func TestTemplateParser(t *testing.T) {
 					Whitespace{Value: "\t"},
 					Element{
 						Name: "input",
+						NameRange: Range{
+							From: Position{Index: 28, Line: 1, Col: 2},
+							To:   Position{Index: 33, Line: 1, Col: 7},
+						},
 						Attributes: []Attribute{
-							ConstantAttribute{Name: "type", Value: "text"},
-							ConstantAttribute{Name: "value", Value: "a"},
+							ConstantAttribute{
+								Name:  "type",
+								Value: "text",
+								NameRange: Range{
+									From: Position{Index: 34, Line: 1, Col: 8},
+									To:   Position{Index: 38, Line: 1, Col: 12},
+								},
+							},
+							ConstantAttribute{
+								Name:  "value",
+								Value: "a",
+								NameRange: Range{
+									From: Position{Index: 46, Line: 1, Col: 20},
+									To:   Position{Index: 51, Line: 1, Col: 25},
+								},
+							},
 						},
 						TrailingSpace: SpaceVertical,
 					},
 					Element{
 						Name: "input",
+						NameRange: Range{
+							From: Position{Index: 61, Line: 2, Col: 2},
+							To:   Position{Index: 66, Line: 2, Col: 7},
+						},
 						Attributes: []Attribute{
-							ConstantAttribute{Name: "type", Value: "text"},
-							ConstantAttribute{Name: "value", Value: "b"},
+							ConstantAttribute{
+								Name:  "type",
+								Value: "text",
+								NameRange: Range{
+									From: Position{Index: 67, Line: 2, Col: 8},
+									To:   Position{Index: 71, Line: 2, Col: 12},
+								},
+							},
+							ConstantAttribute{
+								Name:  "value",
+								Value: "b",
+								NameRange: Range{
+									From: Position{Index: 79, Line: 2, Col: 20},
+									To:   Position{Index: 84, Line: 2, Col: 25},
+								},
+							},
 						},
 						TrailingSpace: SpaceVertical,
 					},
@@ -430,6 +526,10 @@ func TestTemplateParser(t *testing.T) {
 <!DOCTYPE html>
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 32, Line: 2, Col: 1},
+				},
 				Expression: Expression{
 					Value: "Name()",
 					Range: Range{
@@ -469,6 +569,10 @@ func TestTemplateParser(t *testing.T) {
  <a href="/"> @Icon("home", Inline) Home</a>
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 58, Line: 2, Col: 1},
+				},
 				Expression: Expression{
 					Value: "x()",
 					Range: Range{
@@ -490,10 +594,18 @@ func TestTemplateParser(t *testing.T) {
 					},
 					Element{
 						Name: "a",
+						NameRange: Range{
+							From: Position{Index: 14, Line: 1, Col: 2},
+							To:   Position{Index: 15, Line: 1, Col: 3},
+						},
 						Attributes: []Attribute{
 							ConstantAttribute{
 								Name:  "href",
 								Value: "/",
+								NameRange: Range{
+									From: Position{Index: 16, Line: 1, Col: 4},
+									To:   Position{Index: 20, Line: 1, Col: 8},
+								},
 							},
 						},
 						Children: []Node{
@@ -516,7 +628,13 @@ func TestTemplateParser(t *testing.T) {
 								},
 							},
 							Whitespace{Value: " "},
-							Text{Value: "Home"},
+							Text{
+								Value: "Home",
+								Range: Range{
+									From: Position{Index: 48, Line: 1, Col: 36},
+									To:   Position{Index: 52, Line: 1, Col: 40},
+								},
+							},
 						},
 						TrailingSpace: SpaceVertical,
 					},
@@ -529,6 +647,10 @@ func TestTemplateParser(t *testing.T) {
 	// Comment
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 25, Line: 2, Col: 1},
+				},
 				Expression: Expression{
 					Value: "x()",
 					Range: Range{
@@ -548,6 +670,10 @@ func TestTemplateParser(t *testing.T) {
 	/* Comment */
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 28, Line: 2, Col: 1},
+				},
 				Expression: Expression{
 					Value: "x()",
 					Range: Range{
@@ -570,6 +696,10 @@ func TestTemplateParser(t *testing.T) {
 	*/
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 38, Line: 4, Col: 1},
+				},
 				Expression: Expression{
 					Value: "x()",
 					Range: Range{
@@ -593,6 +723,10 @@ func TestTemplateParser(t *testing.T) {
 	-->
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 59, Line: 5, Col: 1},
+				},
 				Expression: Expression{
 					Value: "x()",
 					Range: Range{
@@ -617,6 +751,10 @@ func TestTemplateParser(t *testing.T) {
 		</span>
 }`,
 			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 95, Line: 4, Col: 1},
+				},
 				Expression: Expression{
 					Value: "Name(children templ.Attributes)",
 					Range: Range{
@@ -636,6 +774,10 @@ func TestTemplateParser(t *testing.T) {
 					Whitespace{Value: "\t\t"},
 					Element{
 						Name: "span",
+						NameRange: Range{
+							From: Position{Index: 43, Line: 1, Col: 3},
+							To:   Position{Index: 47, Line: 1, Col: 7},
+						},
 						Attributes: []Attribute{SpreadAttributes{
 							Expression{
 								Value: "children",
@@ -664,6 +806,44 @@ func TestTemplateParser(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "template: void element closers are ignored",
+			input: `templ Name() {
+	<br></br><br>
+}`,
+			expected: HTMLTemplate{
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 31, Line: 2, Col: 1},
+				},
+				Expression: Expression{
+					Value: "Name()",
+					Range: Range{
+						From: Position{Index: 6, Line: 0, Col: 6},
+						To:   Position{Index: 12, Line: 0, Col: 12},
+					},
+				},
+				Children: []Node{
+					Whitespace{Value: "\t"},
+					Element{
+						Name: "br",
+						NameRange: Range{
+							From: Position{Index: 17, Line: 1, Col: 2},
+							To:   Position{Index: 19, Line: 1, Col: 4},
+						},
+						TrailingSpace: SpaceNone,
+					},
+					Element{
+						Name: "br",
+						NameRange: Range{
+							From: Position{Index: 26, Line: 1, Col: 11},
+							To:   Position{Index: 28, Line: 1, Col: 13},
+						},
+						TrailingSpace: SpaceVertical,
+					},
+				},
+			},
+		},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -679,7 +859,7 @@ func TestTemplateParser(t *testing.T) {
 			case tt.expectError && ok:
 				t.Errorf("Success=%v want=%v", ok, !tt.expectError)
 			case !tt.expectError && diff != "":
-				t.Errorf(diff)
+				t.Error(diff)
 			}
 		})
 	}
@@ -696,7 +876,7 @@ func TestTemplateParserErrors(t *testing.T) {
 			input: `templ Name(p Parameter) {
 <span
 }`,
-			expected: "<span>: malformed open element: line 2, col 0",
+			expected: "<span>: malformed open element: line 3, col 0",
 		},
 	}
 	for _, tt := range tests {
@@ -711,7 +891,7 @@ func TestTemplateParserErrors(t *testing.T) {
 				t.Error("expected failure, but got success")
 			}
 			if diff := cmp.Diff(tt.expected, err.Error()); diff != "" {
-				t.Errorf(diff)
+				t.Error(diff)
 			}
 		})
 	}

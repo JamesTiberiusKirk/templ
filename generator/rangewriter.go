@@ -4,14 +4,15 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/a-h/templ/parser/v2"
 )
 
 func NewRangeWriter(w io.Writer) *RangeWriter {
 	return &RangeWriter{
-		w:             w,
-		literalWriter: prodLiteralWriter{},
+		w:       w,
+		builder: &strings.Builder{},
 	}
 }
 
@@ -21,59 +22,28 @@ type RangeWriter struct {
 	w         io.Writer
 
 	// Extract strings.
-	literalWriter literalWriter
-}
-
-type literalWriter interface {
-	writeLiteral(inLiteral bool, s string) string
-	closeLiteral(indent int) string
-	literals() string
-}
-
-type watchLiteralWriter struct {
-	index   int
-	builder *strings.Builder
-}
-
-func (w *watchLiteralWriter) closeLiteral(indent int) string {
-	w.index++
-	w.builder.WriteString("\n")
-	return ""
-}
-
-func (w *watchLiteralWriter) writeLiteral(inLiteral bool, s string) string {
-	w.builder.WriteString(s)
-	if inLiteral {
-		return ""
-	}
-
-	return "templ_7745c5c3_Err = templ.WriteWatchModeString(templ_7745c5c3_Buffer, " + strconv.Itoa(w.index+1) + ")\n"
-}
-
-func (w *watchLiteralWriter) literals() string {
-	return w.builder.String()
-}
-
-type prodLiteralWriter struct{}
-
-func (prodLiteralWriter) closeLiteral(indent int) string {
-	return "\")\n"
-}
-
-func (prodLiteralWriter) writeLiteral(inLiteral bool, s string) string {
-	if inLiteral {
-		return s
-	}
-	return `_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("` + s
-}
-
-func (prodLiteralWriter) literals() string {
-	return ""
+	index    int
+	builder  *strings.Builder
+	Literals []string
 }
 
 func (rw *RangeWriter) closeLiteral(indent int) (r parser.Range, err error) {
 	rw.inLiteral = false
-	if _, err := rw.write(rw.literalWriter.closeLiteral(indent)); err != nil {
+	rw.index++
+
+	var sb strings.Builder
+	sb.WriteString(strings.Repeat("\t", indent))
+	sb.WriteString(`templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, `)
+	sb.WriteString(strconv.Itoa(rw.index))
+	sb.WriteString(`, "`)
+	literal := rw.builder.String()
+	rw.Literals = append(rw.Literals, literal)
+	sb.WriteString(literal)
+	rw.builder.Reset()
+	sb.WriteString(`")`)
+	sb.WriteString("\n")
+
+	if _, err := rw.write(sb.String()); err != nil {
 		return r, err
 	}
 
@@ -95,19 +65,8 @@ func (rw *RangeWriter) WriteIndent(level int, s string) (r parser.Range, err err
 }
 
 func (rw *RangeWriter) WriteStringLiteral(level int, s string) (r parser.Range, err error) {
-	if !rw.inLiteral {
-		_, err = rw.write(strings.Repeat("\t", level))
-		if err != nil {
-			return
-		}
-	}
-
-	if _, err := rw.write(rw.literalWriter.writeLiteral(rw.inLiteral, s)); err != nil {
-		return r, err
-	}
-
 	rw.inLiteral = true
-
+	rw.builder.WriteString(s)
 	return
 }
 
@@ -126,15 +85,16 @@ func (rw *RangeWriter) write(s string) (r parser.Range, err error) {
 		Line:  rw.Current.Line,
 		Col:   rw.Current.Col,
 	}
-	var n int
+	utf8Bytes := make([]byte, 4)
 	for _, c := range s {
-		rw.Current.Col++
+		rlen := utf8.EncodeRune(utf8Bytes, c)
+		rw.Current.Col += uint32(rlen)
 		if c == '\n' {
 			rw.Current.Line++
 			rw.Current.Col = 0
 		}
-		n, err = io.WriteString(rw.w, string(c))
-		rw.Current.Index += int64(n)
+		_, err = rw.w.Write(utf8Bytes[:rlen])
+		rw.Current.Index += int64(rlen)
 		if err != nil {
 			return r, err
 		}

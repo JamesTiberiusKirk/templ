@@ -39,10 +39,16 @@ var openBraceWithOptionalPadding = parse.Any(openBraceWithPadding, openBrace)
 var closeBrace = parse.String("}")
 var closeBraceWithOptionalPadding = parse.StringFrom(optionalSpaces, closeBrace)
 
+var dblOpenBrace = parse.String("{{")
+var dblOpenBraceWithOptionalPadding = parse.StringFrom(dblOpenBrace, optionalSpaces)
+
+var dblCloseBrace = parse.String("}}")
+var dblCloseBraceWithOptionalPadding = parse.StringFrom(optionalSpaces, dblCloseBrace)
+
 var openBracket = parse.String("(")
 var closeBracket = parse.String(")")
 
-var stringUntilNewLine = parse.StringUntil[string](parse.NewLine)
+var stringUntilNewLine = parse.StringUntil(parse.NewLine)
 var newLineOrEOF = parse.Or(parse.NewLine, parse.EOF[string]())
 var stringUntilNewLineOrEOF = parse.StringUntil(newLineOrEOF)
 

@@ -2,11 +2,12 @@ package goexpression
 
 import (
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"regexp"
-	"slices"
 	"strings"
 	"unicode"
 )
@@ -104,56 +105,93 @@ func Switch(content string) (start, end int, err error) {
 	})
 }
 
-var boundaryTokens = map[rune]any{
-	')':  nil,
-	'}':  nil,
-	']':  nil,
-	' ':  nil,
-	'\t': nil,
-	'\n': nil,
-	'@':  nil,
-	'<':  nil,
-	'+':  nil,
-	'.':  nil,
-}
-
-func allBoundaries(content string) (boundaries []int) {
-	for i, r := range content {
-		if _, ok := boundaryTokens[r]; ok {
-			boundaries = append(boundaries, i)
-			boundaries = append(boundaries, i+1)
-		}
+func TemplExpression(src string) (start, end int, err error) {
+	var s scanner.Scanner
+	fset := token.NewFileSet()
+	file := fset.AddFile("", fset.Base(), len(src))
+	errorHandler := func(pos token.Position, msg string) {
+		err = fmt.Errorf("error parsing expression: %v", msg)
 	}
-	boundaries = append(boundaries, len(content))
-	return
-}
+	s.Init(file, []byte(src), errorHandler, scanner.ScanComments)
 
-func Expression(content string) (start, end int, err error) {
-	var candidates []int
-	for _, to := range allBoundaries(content) {
-		expr, err := parser.ParseExpr(content[:to])
+	// Read chains of identifiers, e.g.:
+	// components.Variable
+	// components[0].Variable
+	// components["name"].Function()
+	// functionCall(withLots(), func() { return true })
+	ep := NewExpressionParser()
+	for {
+		pos, tok, lit := s.Scan()
+		stop, err := ep.Insert(pos, tok, lit)
 		if err != nil {
-			continue
+			return 0, 0, err
 		}
-		switch expr := expr.(type) {
-		case *ast.CallExpr:
-			end = int(expr.Rparen)
-		default:
-			end = int(expr.End()) - 1
+		if stop {
+			break
 		}
-		// If the expression ends with `...` then it's a child spread expression.
-		if end < len(content) {
-			if strings.HasPrefix(content[end:], "...") {
-				end += len("...")
+	}
+	return 0, ep.End, nil
+}
+
+func Expression(src string) (start, end int, err error) {
+	var s scanner.Scanner
+	fset := token.NewFileSet()
+	file := fset.AddFile("", fset.Base(), len(src))
+	errorHandler := func(pos token.Position, msg string) {
+		err = fmt.Errorf("error parsing expression: %v", msg)
+	}
+	s.Init(file, []byte(src), errorHandler, scanner.ScanComments)
+
+	// Read chains of identifiers and constants up until RBRACE, e.g.:
+	// true
+	// 123.45 == true
+	// components.Variable
+	// components[0].Variable
+	// components["name"].Function()
+	// functionCall(withLots(), func() { return true })
+	// !true
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+loop:
+	for {
+		pos, tok, lit := s.Scan()
+		if tok == token.EOF {
+			break loop
+		}
+		switch tok {
+		case token.LPAREN: // (
+			parenDepth++
+		case token.RPAREN: // )
+			end = int(pos)
+			parenDepth--
+		case token.LBRACK: // [
+			bracketDepth++
+		case token.RBRACK: // ]
+			end = int(pos)
+			bracketDepth--
+		case token.LBRACE: // {
+			braceDepth++
+		case token.RBRACE: // }
+			braceDepth--
+			if braceDepth < 0 {
+				// We've hit the end of the expression.
+				break loop
 			}
+			end = int(pos)
+		case token.IDENT, token.INT, token.FLOAT, token.IMAG, token.CHAR, token.STRING:
+			end = int(pos) + len(lit) - 1
+		case token.SEMICOLON:
+			continue
+		case token.COMMENT:
+			end = int(pos) + len(lit) - 1
+		case token.ILLEGAL:
+			return 0, 0, fmt.Errorf("illegal token: %v", lit)
+		default:
+			end = int(pos) + len(tok.String()) - 1
 		}
-		candidates = append(candidates, end)
 	}
-	if len(candidates) == 0 {
-		return 0, 0, ErrExpectedNodeNotFound
-	}
-	slices.Sort(candidates)
-	return 0, candidates[len(candidates)-1], nil
+	return start, end, nil
 }
 
 func SliceArgs(content string) (expr string, err error) {
@@ -218,7 +256,7 @@ func Func(content string) (name, expr string, err error) {
 			err = errors.New("parser error: function identifier")
 			return false
 		}
-		expr = src[start:end]
+		expr = strings.Clone(src[start:end])
 		name = fn.Name.Name
 		return false
 	})
@@ -275,11 +313,11 @@ func extract(content string, extractor Extractor) (start, end int, err error) {
 		if !ok {
 			return true
 		}
-		if fn.Name.Name != "templ_container" {
+		if fn.Name == nil || fn.Name.Name != "templ_container" {
 			err = ErrContainerFuncNotFound
 			return false
 		}
-		if fn.Body.List == nil || len(fn.Body.List) == 0 {
+		if fn.Body == nil || len(fn.Body.List) == 0 {
 			err = ErrExpectedNodeNotFound
 			return false
 		}

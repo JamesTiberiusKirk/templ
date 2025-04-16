@@ -1,6 +1,8 @@
 package parser
 
-import "errors"
+import (
+	"errors"
+)
 
 type diagnoser func(Node) ([]Diagnostic, error)
 
@@ -30,10 +32,11 @@ func walkNodes(t []Node, f func(Node) bool) {
 	}
 }
 
+var diagnosers = []diagnoser{
+	useOfLegacyCallSyntaxDiagnoser,
+}
+
 func Diagnose(t TemplateFile) ([]Diagnostic, error) {
-	diagnosers := []diagnoser{
-		legacyCallSyntaxDiagnoser,
-	}
 	var diags []Diagnostic
 	var errs error
 	walkTemplate(t, func(n Node) bool {
@@ -50,7 +53,7 @@ func Diagnose(t TemplateFile) ([]Diagnostic, error) {
 	return diags, errs
 }
 
-func legacyCallSyntaxDiagnoser(n Node) ([]Diagnostic, error) {
+func useOfLegacyCallSyntaxDiagnoser(n Node) ([]Diagnostic, error) {
 	if c, ok := n.(CallTemplateExpression); ok {
 		return []Diagnostic{{
 			Message: "`{! foo }` syntax is deprecated. Use `@foo` syntax instead. Run `templ fmt .` to fix all instances.",

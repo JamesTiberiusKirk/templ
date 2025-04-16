@@ -86,6 +86,22 @@ func NewExpression(value string, from, to parse.Position) Expression {
 	}
 }
 
+// NewRange creates a Range expression.
+func NewRange(from, to parse.Position) Range {
+	return Range{
+		From: Position{
+			Index: int64(from.Index),
+			Line:  uint32(from.Line),
+			Col:   uint32(from.Col),
+		},
+		To: Position{
+			Index: int64(to.Index),
+			Line:  uint32(to.Line),
+			Col:   uint32(to.Col),
+		},
+	}
+}
+
 // Range of text within a file.
 type Range struct {
 	From Position
@@ -103,6 +119,8 @@ type TemplateFile struct {
 	Header []TemplateFileGoExpression
 	// Package expression.
 	Package Package
+	// Filepath is where the file was loaded from. It is not always available.
+	Filepath string
 	// Nodes in the file.
 	Nodes []TemplateFileNode
 }
@@ -120,8 +138,8 @@ func (tf TemplateFile) Write(w io.Writer) error {
 	if _, err := io.WriteString(w, "\n\n"); err != nil {
 		return err
 	}
-	for i := 0; i < len(tf.Nodes); i++ {
-		if err := tf.Nodes[i].Write(w, indent); err != nil {
+	for i, n := range tf.Nodes {
+		if err := n.Write(w, indent); err != nil {
 			return err
 		}
 		if _, err := io.WriteString(w, getNodeWhitespace(tf.Nodes, i)); err != nil {
@@ -156,31 +174,26 @@ type TemplateFileNode interface {
 
 // TemplateFileGoExpression within a TemplateFile
 type TemplateFileGoExpression struct {
-	Expression Expression
+	Expression    Expression
+	BeforePackage bool
 }
 
 func (exp TemplateFileGoExpression) IsTemplateFileNode() bool { return true }
 func (exp TemplateFileGoExpression) Write(w io.Writer, indent int) error {
-	data, err := format.Source([]byte(exp.Expression.Value))
+	in := exp.Expression.Value
+
+	if exp.BeforePackage {
+		in += "\\\\formatstring\npackage p\n\\\\formatstring"
+	}
+	data, err := format.Source([]byte(in))
 	if err != nil {
 		return writeIndent(w, indent, exp.Expression.Value)
 	}
+	if exp.BeforePackage {
+		data = bytes.TrimSuffix(data, []byte("\\\\formatstring\npackage p\n\\\\formatstring"))
+	}
 	_, err = w.Write(data)
 	return err
-}
-
-func writeLinesIndented(w io.Writer, level int, s string) (err error) {
-	indent := strings.Repeat("\t", level)
-	lines := strings.Split(s, "\n")
-	indented := strings.Join(lines, "\n"+indent)
-	if _, err = io.WriteString(w, indent); err != nil {
-		return err
-	}
-	_, err = io.WriteString(w, indented)
-	if err != nil {
-		return
-	}
-	return
 }
 
 func writeIndent(w io.Writer, level int, s ...string) (err error) {
@@ -239,6 +252,7 @@ func (ws Whitespace) Write(w io.Writer, indent int) error {
 //	  background-image: url('./somewhere.png');
 //	}
 type CSSTemplate struct {
+	Range      Range
 	Name       string
 	Expression Expression
 	Properties []CSSProperty
@@ -335,6 +349,7 @@ func (dt DocType) Write(w io.Writer, indent int) error {
 //	  }
 //	}
 type HTMLTemplate struct {
+	Range      Range
 	Expression Expression
 	Children   []Node
 }
@@ -413,6 +428,8 @@ var (
 
 // Text node within the document.
 type Text struct {
+	// Range of the text within the templ file.
+	Range Range
 	// Value is the raw HTML encoded value.
 	Value string
 	// TrailingSpace lists what happens after the text.
@@ -436,6 +453,7 @@ type Element struct {
 	Children       []Node
 	IndentChildren bool
 	TrailingSpace  TrailingSpace
+	NameRange      Range
 }
 
 func (e Element) Trailing() TrailingSpace {
@@ -474,26 +492,17 @@ func (e Element) IsBlockElement() bool {
 
 // Validate that no invalid expressions have been used.
 func (e Element) Validate() (msgs []string, ok bool) {
-	// Validate that style attributes are constant.
-	for _, attr := range e.Attributes {
-		if exprAttr, isExprAttr := attr.(ExpressionAttribute); isExprAttr {
-			if strings.EqualFold(exprAttr.Name, "style") {
-				msgs = append(msgs, "invalid style attribute: style attributes cannot be a templ expression")
-			}
-		}
-	}
-	// Validate that script and style tags don't contain expressions.
-	if strings.EqualFold(e.Name, "script") || strings.EqualFold(e.Name, "style") {
+	// Validate that style tags don't contain expressions.
+	if strings.EqualFold(e.Name, "style") {
 		if containsNonTextNodes(e.Children) {
-			msgs = append(msgs, "invalid node contents: script and style attributes must only contain text")
+			msgs = append(msgs, "invalid node contents: style elements must only contain text")
 		}
 	}
 	return msgs, len(msgs) == 0
 }
 
 func containsNonTextNodes(nodes []Node) bool {
-	for i := 0; i < len(nodes); i++ {
-		n := nodes[i]
+	for _, n := range nodes {
 		switch n.(type) {
 		case Text:
 			continue
@@ -514,7 +523,7 @@ func (e Element) Write(w io.Writer, indent int) error {
 	if err := writeIndent(w, indent, "<", e.Name); err != nil {
 		return err
 	}
-	for i := 0; i < len(e.Attributes); i++ {
+	for i := range e.Attributes {
 		a := e.Attributes[i]
 		// Only the conditional attributes get indented.
 		var attrIndent int
@@ -585,24 +594,22 @@ func writeNodesIndented(w io.Writer, level int, nodes []Node) error {
 
 func writeNodes(w io.Writer, level int, nodes []Node, indent bool) error {
 	startLevel := level
-	for i := 0; i < len(nodes); i++ {
-		_, isWhitespace := nodes[i].(Whitespace)
-
+	for i, n := range nodes {
 		// Skip whitespace nodes.
-		if isWhitespace {
+		if _, isWhitespace := n.(Whitespace); isWhitespace {
 			continue
 		}
-		if err := nodes[i].Write(w, level); err != nil {
+		if err := n.Write(w, level); err != nil {
 			return err
 		}
 
 		// Apply trailing whitespace if present.
 		trailing := SpaceVertical
-		if wst, isWhitespaceTrailer := nodes[i].(WhitespaceTrailer); isWhitespaceTrailer {
+		if wst, isWhitespaceTrailer := n.(WhitespaceTrailer); isWhitespaceTrailer {
 			trailing = wst.Trailing()
 		}
 		// Put a newline after the last node in indentation mode.
-		if indent && ((nextNodeIsBlock(nodes, i) || i == len(nodes)-1) || shouldAlwaysBreakAfter(nodes[i])) {
+		if indent && ((nextNodeIsBlock(nodes, i) || i == len(nodes)-1) || shouldAlwaysBreakAfter(n)) {
 			trailing = SpaceVertical
 		}
 		switch trailing {
@@ -648,6 +655,89 @@ func isBlockNode(node Node) bool {
 	return false
 }
 
+func NewScriptContentsJS(value string) ScriptContents {
+	return ScriptContents{
+		Value: &value,
+	}
+}
+
+func NewScriptContentsGo(code GoCode, insideStringLiteral bool) ScriptContents {
+	return ScriptContents{
+		GoCode:              &code,
+		InsideStringLiteral: insideStringLiteral,
+	}
+}
+
+type ScriptContents struct {
+	// Value is the raw script contents. This is nil if the Type is Go.
+	Value *string
+	// GoCode is the Go expression. This is nil if the Type is JS.
+	GoCode *GoCode
+	// InsideStringLiteral denotes how the result of any Go expression should be escaped in the output.
+	//  - Not quoted: JSON encoded.
+	//  - InsideStringLiteral: JS escaped (newlines become \n, `"' becomes \`\"\' etc.), HTML escaped so that a string can't contain </script>.
+	InsideStringLiteral bool
+}
+
+type ScriptElement struct {
+	Attributes []Attribute
+	Contents   []ScriptContents
+}
+
+func (se ScriptElement) IsNode() bool { return true }
+func (se ScriptElement) Write(w io.Writer, indent int) error {
+	// Start.
+	if err := writeIndent(w, indent, "<script"); err != nil {
+		return err
+	}
+	for i := range se.Attributes {
+		if _, err := w.Write([]byte(" ")); err != nil {
+			return err
+		}
+		a := se.Attributes[i]
+		// Don't indent the attributes, only the conditional attributes get indented.
+		if err := a.Write(w, 0); err != nil {
+			return err
+		}
+	}
+	if _, err := w.Write([]byte(">")); err != nil {
+		return err
+	}
+	// Contents.
+	for _, c := range se.Contents {
+		if c.Value != nil {
+			if err := writeStrings(w, *c.Value); err != nil {
+				return err
+			}
+			continue
+		}
+		// Write the expression.
+		if c.GoCode == nil {
+			return errors.New("script contents expression is nil")
+		}
+		if isWhitespace(c.GoCode.Expression.Value) {
+			c.GoCode.Expression.Value = ""
+		}
+		if err := writeStrings(w, `{{ `, c.GoCode.Expression.Value, ` }}`, string(c.GoCode.TrailingSpace)); err != nil {
+			return err
+		}
+	}
+	// Close.
+	if _, err := w.Write([]byte("</script>")); err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeStrings(w io.Writer, ss ...string) error {
+	for _, s := range ss {
+		if _, err := io.WriteString(w, s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type RawElement struct {
 	Name       string
 	Attributes []Attribute
@@ -660,11 +750,10 @@ func (e RawElement) Write(w io.Writer, indent int) error {
 	if err := writeIndent(w, indent, "<", e.Name); err != nil {
 		return err
 	}
-	for i := 0; i < len(e.Attributes); i++ {
+	for _, a := range e.Attributes {
 		if _, err := w.Write([]byte(" ")); err != nil {
 			return err
 		}
-		a := e.Attributes[i]
 		// Don't indent the attributes, only the conditional attributes get indented.
 		if err := a.Write(w, 0); err != nil {
 			return err
@@ -691,7 +780,8 @@ type Attribute interface {
 
 // <hr noshade/>
 type BoolConstantAttribute struct {
-	Name string
+	Name      string
+	NameRange Range
 }
 
 func (bca BoolConstantAttribute) String() string {
@@ -707,6 +797,7 @@ type ConstantAttribute struct {
 	Name        string
 	Value       string
 	SingleQuote bool
+	NameRange   Range
 }
 
 func (ca ConstantAttribute) String() string {
@@ -725,20 +816,22 @@ func (ca ConstantAttribute) Write(w io.Writer, indent int) error {
 type BoolExpressionAttribute struct {
 	Name       string
 	Expression Expression
+	NameRange  Range
 }
 
-func (ea BoolExpressionAttribute) String() string {
-	return ea.Name + `?={ ` + ea.Expression.Value + ` }`
+func (bea BoolExpressionAttribute) String() string {
+	return bea.Name + `?={ ` + bea.Expression.Value + ` }`
 }
 
-func (ea BoolExpressionAttribute) Write(w io.Writer, indent int) error {
-	return writeIndent(w, indent, ea.String())
+func (bea BoolExpressionAttribute) Write(w io.Writer, indent int) error {
+	return writeIndent(w, indent, bea.String())
 }
 
 // href={ ... }
 type ExpressionAttribute struct {
 	Name       string
 	Expression Expression
+	NameRange  Range
 }
 
 func (ea ExpressionAttribute) String() string {
@@ -933,8 +1026,32 @@ func (tee TemplElementExpression) Write(w io.Writer, indent int) error {
 	if err != nil {
 		source = []byte(tee.Expression.Value)
 	}
-	if err := writeLinesIndented(w, indent, "@"+string(source)); err != nil {
-		return err
+	// Indent all lines and re-format, we can then use this to only re-indent lines that gofmt would modify.
+	reformattedSource, err := format.Source(bytes.ReplaceAll(source, []byte("\n"), []byte("\n\t")))
+	if err != nil {
+		reformattedSource = source
+	}
+	sourceLines := bytes.Split(source, []byte("\n"))
+	reformattedSourceLines := bytes.Split(reformattedSource, []byte("\n"))
+	for i := range sourceLines {
+		if i == 0 {
+			if err := writeIndent(w, indent, "@"+string(sourceLines[i])); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := io.WriteString(w, "\n"); err != nil {
+			return err
+		}
+		if string(sourceLines[i]) != string(reformattedSourceLines[i]) {
+			if _, err := w.Write(sourceLines[i]); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := writeIndent(w, indent, string(sourceLines[i])); err != nil {
+			return err
+		}
 	}
 	if len(tee.Children) == 0 {
 		return nil
@@ -1041,8 +1158,7 @@ func (se SwitchExpression) Write(w io.Writer, indent int) error {
 		return err
 	}
 	indent++
-	for i := 0; i < len(se.Cases); i++ {
-		c := se.Cases[i]
+	for _, c := range se.Cases {
 		if err := writeIndent(w, indent, c.Expression.Value, "\n"); err != nil {
 			return err
 		}
@@ -1088,6 +1204,37 @@ func (fe ForExpression) Write(w io.Writer, indent int) error {
 	return nil
 }
 
+// GoCode is used within HTML elements, and allows arbitrary go code.
+// {{ ... }}
+type GoCode struct {
+	Expression Expression
+	// TrailingSpace lists what happens after the expression.
+	TrailingSpace TrailingSpace
+	Multiline     bool
+}
+
+func (gc GoCode) Trailing() TrailingSpace {
+	return gc.TrailingSpace
+}
+
+func (gc GoCode) IsNode() bool { return true }
+func (gc GoCode) Write(w io.Writer, indent int) error {
+	if isWhitespace(gc.Expression.Value) {
+		gc.Expression.Value = ""
+	}
+	source, err := format.Source([]byte(gc.Expression.Value))
+	if err != nil {
+		source = []byte(gc.Expression.Value)
+	}
+	if !gc.Multiline {
+		return writeIndent(w, indent, `{{ `, string(source), ` }}`)
+	}
+	if err := writeIndent(w, indent, "{{"+string(source)+"\n"); err != nil {
+		return err
+	}
+	return writeIndent(w, indent, "}}")
+}
+
 // StringExpression is used within HTML elements, and for style values.
 // { ... }
 type StringExpression struct {
@@ -1111,6 +1258,7 @@ func (se StringExpression) Write(w io.Writer, indent int) error {
 
 // ScriptTemplate is a script block.
 type ScriptTemplate struct {
+	Range      Range
 	Name       Expression
 	Parameters Expression
 	Value      string

@@ -40,6 +40,11 @@ func TestIfExpression(t *testing.T) {
 				Then: []Node{
 					Element{
 						Name: "span",
+						NameRange: Range{
+							From: Position{Index: 13, Line: 1, Col: 1},
+							To:   Position{Index: 17, Line: 1, Col: 5},
+						},
+
 						Children: []Node{
 							Whitespace{Value: "\n  "},
 							StringExpression{
@@ -157,7 +162,14 @@ func TestIfExpression(t *testing.T) {
 				},
 				Then: []Node{
 					Whitespace{Value: "  "},
-					Text{Value: "text", TrailingSpace: SpaceVertical},
+					Text{
+						Value: "text",
+						Range: Range{
+							From: Position{Index: 15, Line: 1, Col: 2},
+							To:   Position{Index: 19, Line: 1, Col: 6},
+						},
+						TrailingSpace: SpaceVertical,
+					},
 				},
 			},
 		},
@@ -188,6 +200,11 @@ func TestIfExpression(t *testing.T) {
 				Then: []Node{
 					Element{
 						Name: "span",
+						NameRange: Range{
+							From: Position{Index: 13, Line: 1, Col: 1},
+							To:   Position{Index: 17, Line: 1, Col: 5},
+						},
+
 						Children: []Node{
 							Whitespace{Value: "\n  "},
 							StringExpression{
@@ -326,6 +343,11 @@ func TestIfExpression(t *testing.T) {
 							Whitespace{Value: "\t\t\t\t\t\t"},
 							Element{
 								Name: "div",
+								NameRange: Range{
+									From: Position{Index: 30, Line: 2, Col: 7},
+									To:   Position{Index: 33, Line: 2, Col: 10},
+								},
+
 								Children: []Node{
 									StringExpression{
 										Expression: Expression{
@@ -600,8 +622,18 @@ func TestIncompleteIf(t *testing.T) {
 	t.Run("no opening brace", func(t *testing.T) {
 		input := parse.NewInput(`if a tree falls in the woods`)
 		_, _, err := ifExpression.Parse(input)
-		if err.Error() != "if: unterminated (missing closing '{\\n') - https://templ.guide/syntax-and-usage/statements#incomplete-statements: line 0, col 0" {
+		if err == nil {
+			t.Fatal("expected an error, got nil")
+		}
+		pe, isParseError := err.(parse.ParseError)
+		if !isParseError {
+			t.Fatalf("expected a parse error, got %T", err)
+		}
+		if pe.Msg != "if: unterminated (missing closing '{\\n') - https://templ.guide/syntax-and-usage/statements#incomplete-statements" {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if pe.Pos.Line != 0 {
+			t.Fatalf("unexpected line: %d", pe.Pos.Line)
 		}
 	})
 	t.Run("capitalised If", func(t *testing.T) {

@@ -15,6 +15,30 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
+func TestCSSID(t *testing.T) {
+	t.Run("minimum hash suffix length is 8", func(t *testing.T) {
+		// See issue #978.
+		name := "classA"
+		css := "background-color:white;"
+		actual := len(templ.CSSID(name, css))
+		expected := len(name) + 1 + 8
+		if expected != actual {
+			t.Errorf("expected length %d, got %d", expected, actual)
+		}
+	})
+	t.Run("known hash collisions are avoided", func(t *testing.T) {
+		name := "classA"
+		// Note that the first 4 characters of the hash are the same.
+		css1 := "grid-column:1;grid-row:1;"  // After hash: f781266f
+		css2 := "grid-column:13;grid-row:6;" // After hash: f781f18b
+		id1 := templ.CSSID(name, css1)
+		id2 := templ.CSSID(name, css2)
+		if id1 == id2 {
+			t.Errorf("hash collision: %s == %s", id1, id2)
+		}
+	})
+}
+
 func TestCSSHandler(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -51,10 +75,10 @@ func TestCSSHandler(t *testing.T) {
 			h := templ.NewCSSHandler(tt.input...)
 			h.ServeHTTP(w, &http.Request{})
 			if diff := cmp.Diff(tt.expectedMIMEType, w.Header().Get("Content-Type")); diff != "" {
-				t.Errorf(diff)
+				t.Error(diff)
 			}
 			if diff := cmp.Diff(tt.expectedBody, w.Body.String()); diff != "" {
-				t.Errorf(diff)
+				t.Error(diff)
 			}
 		})
 	}
@@ -110,10 +134,10 @@ func TestCSSMiddleware(t *testing.T) {
 			w := httptest.NewRecorder()
 			tt.handler.ServeHTTP(w, tt.input)
 			if diff := cmp.Diff(tt.expectedMIMEType, w.Header().Get("Content-Type")); diff != "" {
-				t.Errorf(diff)
+				t.Error(diff)
 			}
 			if diff := cmp.Diff(tt.expectedBody, w.Body.String()); diff != "" {
-				t.Errorf(diff)
+				t.Error(diff)
 			}
 		})
 	}
@@ -125,27 +149,28 @@ var cssInputs = []any{
 	templ.ConstantCSSClass("d"), // ConstantCSSClass
 	templ.ComponentCSSClass{ID: "e", Class: ".e{color:red}"}, // ComponentCSSClass
 	map[string]bool{"f": true, "ff": false},                  // map[string]bool
-	templ.KV[string, bool]("g", true),                        // KeyValue[string, bool]
-	templ.KV[string, bool]("gg", false),                      // KeyValue[string, bool]
+	templ.KV("g", true),                                      // KeyValue[string, bool]
+	templ.KV("gg", false),                                    // KeyValue[string, bool]
 	[]templ.KeyValue[string, bool]{
 		templ.KV("h", true),
 		templ.KV("hh", false),
 	}, // []KeyValue[string, bool]
-	templ.KV[templ.CSSClass, bool](templ.ConstantCSSClass("i"), true),   // KeyValue[CSSClass, bool]
-	templ.KV[templ.CSSClass, bool](templ.ConstantCSSClass("ii"), false), // KeyValue[CSSClass, bool]
-	templ.KV[templ.ComponentCSSClass, bool](templ.ComponentCSSClass{
+	templ.KV(templ.ConstantCSSClass("i"), true),   // KeyValue[CSSClass, bool]
+	templ.KV(templ.ConstantCSSClass("ii"), false), // KeyValue[CSSClass, bool]
+	templ.KV(templ.ComponentCSSClass{
 		ID:    "j",
 		Class: ".j{color:red}",
 	}, true), // KeyValue[ComponentCSSClass, bool]
-	templ.KV[templ.ComponentCSSClass, bool](templ.ComponentCSSClass{
+	templ.KV(templ.ComponentCSSClass{
 		ID:    "jj",
 		Class: ".jj{color:red}",
 	}, false), // KeyValue[ComponentCSSClass, bool]
-	templ.CSSClasses{templ.ConstantCSSClass("k")},                             // CSSClasses
-	func() templ.CSSClass { return templ.ConstantCSSClass("l") },              // func() CSSClass
-	templ.CSSClass(templ.ConstantCSSClass("m")),                               // CSSClass
-	customClass{name: "n"},                                                    // CSSClass
-	templ.KV[templ.ConstantCSSClass, bool](templ.ConstantCSSClass("o"), true), // KeyValue[ConstantCSSClass, bool]
+	templ.CSSClasses{templ.ConstantCSSClass("k")},                // CSSClasses
+	func() templ.CSSClass { return templ.ConstantCSSClass("l") }, // func() CSSClass
+	templ.CSSClass(templ.ConstantCSSClass("m")),                  // CSSClass
+	customClass{name: "n"},                                       // CSSClass
+	[]templ.CSSClass{customClass{name: "n"}},                     // []CSSClass
+	templ.KV(templ.ConstantCSSClass("o"), true),                  // KeyValue[ConstantCSSClass, bool]
 	[]templ.KeyValue[templ.ConstantCSSClass, bool]{
 		templ.KV(templ.ConstantCSSClass("p"), true),
 		templ.KV(templ.ConstantCSSClass("pp"), false),
@@ -376,181 +401,6 @@ func TestClassesFunction(t *testing.T) {
 	}
 }
 
-func TestHandler(t *testing.T) {
-	hello := templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
-		if _, err := io.WriteString(w, "Hello"); err != nil {
-			t.Fatalf("failed to write string: %v", err)
-		}
-		return nil
-	})
-	errorComponent := templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
-		if _, err := io.WriteString(w, "Hello"); err != nil {
-			t.Fatalf("failed to write string: %v", err)
-		}
-		return errors.New("handler error")
-	})
-
-	tests := []struct {
-		name             string
-		input            *templ.ComponentHandler
-		expectedStatus   int
-		expectedMIMEType string
-		expectedBody     string
-	}{
-		{
-			name:             "handlers return OK by default",
-			input:            templ.Handler(hello),
-			expectedStatus:   http.StatusOK,
-			expectedMIMEType: "text/html; charset=utf-8",
-			expectedBody:     "Hello",
-		},
-		{
-			name:             "handlers return OK by default",
-			input:            templ.Handler(templ.Raw(`♠ ‘ &spades; &#8216;`)),
-			expectedStatus:   http.StatusOK,
-			expectedMIMEType: "text/html; charset=utf-8",
-			expectedBody:     "♠ ‘ &spades; &#8216;",
-		},
-		{
-			name:             "handlers can be configured to return an alternative status code",
-			input:            templ.Handler(hello, templ.WithStatus(http.StatusNotFound)),
-			expectedStatus:   http.StatusNotFound,
-			expectedMIMEType: "text/html; charset=utf-8",
-			expectedBody:     "Hello",
-		},
-		{
-			name:             "handlers can be configured to return an alternative status code and content type",
-			input:            templ.Handler(hello, templ.WithStatus(http.StatusOK), templ.WithContentType("text/csv")),
-			expectedStatus:   http.StatusOK,
-			expectedMIMEType: "text/csv",
-			expectedBody:     "Hello",
-		},
-		{
-			name:             "handlers that fail return a 500 error",
-			input:            templ.Handler(errorComponent),
-			expectedStatus:   http.StatusInternalServerError,
-			expectedMIMEType: "text/plain; charset=utf-8",
-			expectedBody:     "templ: failed to render template\n",
-		},
-		{
-			name: "error handling can be customised",
-			input: templ.Handler(errorComponent, templ.WithErrorHandler(func(r *http.Request, err error) http.Handler {
-				// Because the error is received, it's possible to log the detail of the request.
-				// log.Printf("template render error for %v %v: %v", r.Method, r.URL.String(), err)
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusBadRequest)
-					if _, err := io.WriteString(w, "custom body"); err != nil {
-						t.Fatalf("failed to write string: %v", err)
-					}
-				})
-			})),
-			expectedStatus:   http.StatusBadRequest,
-			expectedMIMEType: "text/html; charset=utf-8",
-			expectedBody:     "custom body",
-		},
-	}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			r := httptest.NewRequest("GET", "/test", nil)
-			tt.input.ServeHTTP(w, r)
-			if got := w.Result().StatusCode; tt.expectedStatus != got {
-				t.Errorf("expected status %d, got %d", tt.expectedStatus, got)
-			}
-			if mimeType := w.Result().Header.Get("Content-Type"); tt.expectedMIMEType != mimeType {
-				t.Errorf("expected content-type %s, got %s", tt.expectedMIMEType, mimeType)
-			}
-			body, err := io.ReadAll(w.Result().Body)
-			if err != nil {
-				t.Errorf("failed to read body: %v", err)
-			}
-			if diff := cmp.Diff(tt.expectedBody, string(body)); diff != "" {
-				t.Error(diff)
-			}
-		})
-	}
-}
-
-func TestRenderScriptItems(t *testing.T) {
-	s1 := templ.ComponentScript{
-		Name:     "s1",
-		Function: "function s1() { return 'hello1'; }",
-	}
-	s2 := templ.ComponentScript{
-		Name:     "s2",
-		Function: "function s2() { return 'hello2'; }",
-	}
-	tests := []struct {
-		name     string
-		toIgnore []templ.ComponentScript
-		toRender []templ.ComponentScript
-		expected string
-	}{
-		{
-			name:     "if none are ignored, everything is rendered",
-			toIgnore: nil,
-			toRender: []templ.ComponentScript{s1, s2},
-			expected: `<script type="text/javascript">` + s1.Function + s2.Function + `</script>`,
-		},
-		{
-			name: "if something outside the expected is ignored, if has no effect",
-			toIgnore: []templ.ComponentScript{
-				{
-					Name:     "s3",
-					Function: "function s3() { return 'hello3'; }",
-				},
-			},
-			toRender: []templ.ComponentScript{s1, s2},
-			expected: `<script type="text/javascript">` + s1.Function + s2.Function + `</script>`,
-		},
-		{
-			name:     "if one is ignored, it's not rendered",
-			toIgnore: []templ.ComponentScript{s1},
-			toRender: []templ.ComponentScript{s1, s2},
-			expected: `<script type="text/javascript">` + s2.Function + `</script>`,
-		},
-		{
-			name: "if all are ignored, not even style tags are rendered",
-			toIgnore: []templ.ComponentScript{
-				s1,
-				s2,
-				{
-					Name:     "s3",
-					Function: "function s3() { return 'hello3'; }",
-				},
-			},
-			toRender: []templ.ComponentScript{s1, s2},
-			expected: ``,
-		},
-	}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			b := new(bytes.Buffer)
-
-			// Render twice, reusing the same context so that there's a memory of which classes have been rendered.
-			ctx = templ.InitializeContext(ctx)
-			err := templ.RenderScriptItems(ctx, b, tt.toIgnore...)
-			if err != nil {
-				t.Fatalf("failed to render initial scripts: %v", err)
-			}
-
-			// Now render again to check that only the expected classes were rendered.
-			b.Reset()
-			err = templ.RenderScriptItems(ctx, b, tt.toRender...)
-			if err != nil {
-				t.Fatalf("failed to render scripts: %v", err)
-			}
-
-			if diff := cmp.Diff(tt.expected, b.String()); diff != "" {
-				t.Error(diff)
-			}
-		})
-	}
-}
-
 type baseError struct {
 	Value int
 }
@@ -722,6 +572,24 @@ func TestGoHTMLComponents(t *testing.T) {
 		})
 		if actualAllocs > 1 {
 			t.Errorf("expected 1 alloc, got %v", actualAllocs)
+		}
+	})
+}
+
+func TestNonce(t *testing.T) {
+	ctx := context.Background()
+	t.Run("returns empty string if not set", func(t *testing.T) {
+		actual := templ.GetNonce(ctx)
+		if actual != "" {
+			t.Errorf("expected empty string got %q", actual)
+		}
+	})
+	t.Run("returns value if one has been set", func(t *testing.T) {
+		expected := "abc123"
+		ctx := templ.WithNonce(context.Background(), expected)
+		actual := templ.GetNonce(ctx)
+		if actual != expected {
+			t.Errorf("expected %q got %q", expected, actual)
 		}
 	})
 }
