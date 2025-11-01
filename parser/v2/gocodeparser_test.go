@@ -11,12 +11,12 @@ func TestGoCodeParser(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		expected GoCode
+		expected *GoCode
 	}{
 		{
 			name:  "basic expression",
 			input: `{{ p := "this" }}`,
-			expected: GoCode{
+			expected: &GoCode{
 				Expression: Expression{
 					Value: `p := "this"`,
 					Range: Range{
@@ -37,7 +37,7 @@ func TestGoCodeParser(t *testing.T) {
 		{
 			name:  "basic expression, no space",
 			input: `{{p:="this"}}`,
-			expected: GoCode{
+			expected: &GoCode{
 				Expression: Expression{
 					Value: `p:="this"`,
 					Range: Range{
@@ -62,17 +62,16 @@ func TestGoCodeParser(t *testing.T) {
 					dosomething()
 				}
 			}}`,
-			expected: GoCode{
+			expected: &GoCode{
 				Expression: Expression{
-					Value: `
-				p := func() {
+					Value: `p := func() {
 					dosomething()
 				}`,
 					Range: Range{
 						From: Position{
-							Index: 2,
-							Line:  0,
-							Col:   2,
+							Index: 7,
+							Line:  1,
+							Col:   4,
 						},
 						To: Position{
 							Index: 45,
@@ -93,17 +92,24 @@ func TestGoCodeParser(t *testing.T) {
 	four := "four"
 	// Comment at end of expression.
 }}`,
-			expected: GoCode{
+			expected: &GoCode{
 				Expression: Expression{
-					Value: `
-	one := "one"
+					Value: `one := "one"
 	two := "two"
 	// Comment in middle of expression.
 	four := "four"
 	// Comment at end of expression.`,
 					Range: Range{
-						From: Position{Index: 2, Line: 0, Col: 2},
-						To:   Position{Index: 117, Line: 5, Col: 33},
+						From: Position{
+							Index: 4,
+							Line:  1,
+							Col:   1,
+						},
+						To: Position{
+							Index: 117,
+							Line:  5,
+							Col:   33,
+						},
 					},
 				},
 				TrailingSpace: SpaceNone,
@@ -122,7 +128,7 @@ func TestGoCodeParser(t *testing.T) {
 			if !ok {
 				t.Fatalf("unexpected failure for input %q", tt.input)
 			}
-			actual := an.(GoCode)
+			actual := an.(*GoCode)
 			if diff := cmp.Diff(tt.expected, actual); diff != "" {
 				t.Error(diff)
 			}

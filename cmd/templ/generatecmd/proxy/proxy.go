@@ -122,7 +122,9 @@ func (h *Handler) modifyResponse(r *http.Response) error {
 	if err != nil {
 		return err
 	}
-	defer r.Body.Close()
+	defer func() {
+		_ = r.Body.Close()
+	}()
 	body, err := io.ReadAll(encr)
 	if err != nil {
 		return err
@@ -240,8 +242,8 @@ type roundTripper struct {
 
 func (rt *roundTripper) setShouldSkipResponseModificationHeader(r *http.Request, resp *http.Response) {
 	// Instruct the modifyResponse function to skip modifying the response if the
-	// HTTP request has come from HTMX.
-	if r.Header.Get("HX-Request") != "true" {
+	// HTTP request has come from HTMX or Datastar.
+	if r.Header.Get("HX-Request") != "true" && r.Header.Get("Datastar-Request") != "true" {
 		return
 	}
 	resp.Header.Set("templ-skip-modify", "true")
@@ -256,13 +258,15 @@ func (rt *roundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
-		r.Body.Close()
+		if err = r.Body.Close(); err != nil {
+			return nil, fmt.Errorf("failed to close request body: %w", err)
+		}
 	}
 
 	// Retry logic.
 	var resp *http.Response
 	var err error
-	for retries := 0; retries < rt.maxRetries; retries++ {
+	for retries := range rt.maxRetries {
 		// Clone the request and set the body.
 		req := r.Clone(r.Context())
 		if bodyBytes != nil {

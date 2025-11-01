@@ -4,7 +4,7 @@ import (
 	"github.com/a-h/parse"
 )
 
-var scriptTemplateParser = parse.Func(func(pi *parse.Input) (r ScriptTemplate, ok bool, err error) {
+var scriptTemplateParser = parse.Func(func(pi *parse.Input) (r *ScriptTemplate, ok bool, err error) {
 	start := pi.Position()
 
 	// Parse the name.
@@ -13,8 +13,13 @@ var scriptTemplateParser = parse.Func(func(pi *parse.Input) (r ScriptTemplate, o
 		pi.Seek(start.Index)
 		return
 	}
-	r.Name = se.Name
-	r.Parameters = se.Parameters
+	r = &ScriptTemplate{
+		Name:       se.Name,
+		Parameters: se.Parameters,
+	}
+	defer func() {
+		r.Range = NewRange(start, pi.Position())
+	}()
 
 	// Read code expression.
 	var e Expression
@@ -29,8 +34,6 @@ var scriptTemplateParser = parse.Func(func(pi *parse.Input) (r ScriptTemplate, o
 		err = parse.Error("script template: missing closing brace", pi.Position())
 		return
 	}
-
-	r.Range = NewRange(start, pi.Position())
 
 	return r, true, nil
 })

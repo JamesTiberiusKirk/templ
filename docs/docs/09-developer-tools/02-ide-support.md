@@ -5,7 +5,7 @@
 There's a VS Code extension, just make sure you've already installed templ and that it's on your path.
 
 - https://marketplace.visualstudio.com/items?itemName=a-h.templ
-- https://github.com/a-h/templ-vscode
+- https://github.com/templ-go/templ-vscode
 
 VSCodium users can find the extension on the Open VSX Registry at https://open-vsx.org/extension/a-h/templ
 
@@ -86,6 +86,13 @@ To resolve this issue, add the following code to your configuration. This is als
 vim.filetype.add({ extension = { templ = "templ" } })
 ```
 
+## JetBrains
+
+IntelliJ / GoLand language support for templ:
+
+- https://github.com/templ-go/templ-jetbrains
+- https://plugins.jetbrains.com/plugin/23088-templ
+
 ##### Other LSPs within .templ files
 
 These LSPs can be used *in conjunction* with the templ lsp and tree-sitter. Here's how to set them up.
@@ -144,7 +151,6 @@ module.exports = {
 ### Formatting
 
 With the templ LSP installed and configured, you can use the following code snippet to format on save:
-
 
 ```lua
 vim.api.nvim_create_autocmd({ "BufWritePre" }, { pattern = { "*.templ" }, callback = vim.lsp.buf.format })
@@ -210,6 +216,12 @@ local templ_format = function()
     })
 end
 ```
+
+:::note
+Formatting `script` and `style` elements in templ files is handed off to prettier.
+
+If you don't have `prettierd`, `prettier` or `npx` on your path, formatting will not be applied to those elements.
+:::
 
 ### Troubleshooting
 

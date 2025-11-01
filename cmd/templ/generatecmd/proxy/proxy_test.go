@@ -23,31 +23,42 @@ import (
 )
 
 func TestRoundTripper(t *testing.T) {
-	t.Run("if the HX-Request header is present, set the templ-skip-modify header on the response", func(t *testing.T) {
-		rt := &roundTripper{}
-		req, err := http.NewRequest("GET", "http://example.com", nil)
-		if err != nil {
-			t.Fatalf("unexpected error creating request: %v", err)
-		}
-		req.Header.Set("HX-Request", "true")
-		resp := &http.Response{Header: make(http.Header)}
-		rt.setShouldSkipResponseModificationHeader(req, resp)
-		if resp.Header.Get("templ-skip-modify") != "true" {
-			t.Errorf("expected templ-skip-modify header to be true, got %v", resp.Header.Get("templ-skip-modify"))
-		}
-	})
-	t.Run("if the HX-Request header is not present, do not set the templ-skip-modify header on the response", func(t *testing.T) {
-		rt := &roundTripper{}
-		req, err := http.NewRequest("GET", "http://example.com", nil)
-		if err != nil {
-			t.Fatalf("unexpected error creating request: %v", err)
-		}
-		resp := &http.Response{Header: make(http.Header)}
-		rt.setShouldSkipResponseModificationHeader(req, resp)
-		if resp.Header.Get("templ-skip-modify") != "" {
-			t.Errorf("expected templ-skip-modify header to be empty, got %v", resp.Header.Get("templ-skip-modify"))
-		}
-	})
+	tests := []struct {
+		name         string
+		headers      map[string]string
+		expectedSkip string
+	}{
+		{
+			name:         "HTMX requests skip modification",
+			headers:      map[string]string{"HX-Request": "true"},
+			expectedSkip: "true",
+		},
+		{
+			name:         "Datastar requests skip modification",
+			headers:      map[string]string{"Datastar-Request": "true"},
+			expectedSkip: "true",
+		},
+		{
+			name:         "Non-HTMX and Datastar requests do not skip modification",
+			headers:      map[string]string{},
+			expectedSkip: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rt := &roundTripper{}
+			req := httptest.NewRequest("GET", "http://example.com", nil)
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			resp := &http.Response{Header: make(http.Header)}
+			rt.setShouldSkipResponseModificationHeader(req, resp)
+			if resp.Header.Get("templ-skip-modify") != tc.expectedSkip {
+				t.Errorf("expected templ-skip-modify header to be %q, got %q", tc.expectedSkip, resp.Header.Get("templ-skip-modify"))
+			}
+		})
+	}
 }
 
 func getScriptTag(t *testing.T, nonce string) string {
@@ -310,7 +321,9 @@ func TestProxy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error writing gzip: %v", err)
 		}
-		gzw.Close()
+		if err = gzw.Close(); err != nil {
+			t.Fatalf("unexpected error closing gzip writer: %v", err)
+		}
 
 		expectedString, err := insertScriptTagIntoBody("", body)
 		if err != nil {
@@ -323,7 +336,9 @@ func TestProxy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error writing gzip: %v", err)
 		}
-		gzw.Close()
+		if err = gzw.Close(); err != nil {
+			t.Fatalf("unexpected error closing gzip writer: %v", err)
+		}
 		expectedLength := len(expectedBytes.Bytes())
 
 		r := &http.Response{
@@ -374,7 +389,9 @@ func TestProxy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error writing gzip: %v", err)
 		}
-		brw.Close()
+		if err = brw.Close(); err != nil {
+			t.Fatalf("unexpected error closing brotli writer: %v", err)
+		}
 
 		expectedString, err := insertScriptTagIntoBody("", body)
 		if err != nil {
@@ -387,7 +404,9 @@ func TestProxy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error writing gzip: %v", err)
 		}
-		brw.Close()
+		if err = brw.Close(); err != nil {
+			t.Fatalf("unexpected error closing brotli writer: %v", err)
+		}
 		expectedLength := len(expectedBytes.Bytes())
 
 		r := &http.Response{
@@ -468,7 +487,9 @@ func TestProxy(t *testing.T) {
 				errChan <- err
 				return
 			}
-			defer resp.Body.Close()
+			defer func() {
+				_ = resp.Body.Close()
+			}()
 
 			sseListening <- true
 			lines := []string{}

@@ -11,13 +11,13 @@ func TestSwitchExpressionParser(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		expected SwitchExpression
+		expected *SwitchExpression
 	}{
 		{
 			name: "switch: simple",
 			input: `switch "stringy" {
 }`,
-			expected: SwitchExpression{
+			expected: &SwitchExpression{
 				Expression: Expression{
 					Value: `"stringy"`,
 					Range: Range{
@@ -33,6 +33,10 @@ func TestSwitchExpressionParser(t *testing.T) {
 						},
 					},
 				},
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 20, Line: 1, Col: 1},
+				},
 			},
 		},
 		{
@@ -43,7 +47,7 @@ default:
 	  { "span content" }
 	</span>
 }`,
-			expected: SwitchExpression{
+			expected: &SwitchExpression{
 				Expression: Expression{
 					Value: `"stringy"`,
 					Range: Range{
@@ -77,16 +81,16 @@ default:
 							},
 						},
 						Children: []Node{
-							Whitespace{Value: "\t"},
-							Element{
+							&Whitespace{Value: "\t"},
+							&Element{
 								Name: "span",
 								NameRange: Range{
 									From: Position{Index: 30, Line: 2, Col: 2},
 									To:   Position{Index: 34, Line: 2, Col: 6},
 								},
 								Children: []Node{
-									Whitespace{Value: "\n\t  "},
-									StringExpression{
+									&Whitespace{Value: "\n\t  "},
+									&StringExpression{
 										Expression: Expression{
 											Value: `"span content"`,
 											Range: Range{
@@ -107,9 +111,17 @@ default:
 								},
 								IndentChildren: true,
 								TrailingSpace:  SpaceVertical,
+								Range: Range{
+									From: Position{Index: 29, Line: 2, Col: 1},
+									To:   Position{Index: 67, Line: 5, Col: 0},
+								},
 							},
 						},
 					},
+				},
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 68, Line: 5, Col: 1},
 				},
 			},
 		},
@@ -121,7 +133,7 @@ default:
   { "span content" }
 </span>
 }`,
-			expected: SwitchExpression{
+			expected: &SwitchExpression{
 				Expression: Expression{
 					Value: `"stringy"`,
 					Range: Range{
@@ -155,15 +167,15 @@ default:
 							},
 						},
 						Children: []Node{
-							Element{
+							&Element{
 								Name: "span",
 								NameRange: Range{
 									From: Position{Index: 37, Line: 2, Col: 1},
 									To:   Position{Index: 41, Line: 2, Col: 5},
 								},
 								Children: []Node{
-									Whitespace{Value: "\n  "},
-									StringExpression{
+									&Whitespace{Value: "\n  "},
+									&StringExpression{
 										Expression: Expression{
 											Value: `"span content"`,
 											Range: Range{
@@ -184,9 +196,17 @@ default:
 								},
 								IndentChildren: true,
 								TrailingSpace:  SpaceVertical,
+								Range: Range{
+									From: Position{Index: 36, Line: 2, Col: 0},
+									To:   Position{Index: 72, Line: 5, Col: 0},
+								},
 							},
 						},
 					},
+				},
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 73, Line: 5, Col: 1},
 				},
 			},
 		},
@@ -198,7 +218,7 @@ default:
 	case "b":
 		{ "B" }
 }`,
-			expected: SwitchExpression{
+			expected: &SwitchExpression{
 				Expression: Expression{
 					Value: `"stringy"`,
 					Range: Range{
@@ -232,10 +252,10 @@ default:
 							},
 						},
 						Children: []Node{
-							Whitespace{
+							&Whitespace{
 								Value: "\t\t",
 							},
-							StringExpression{
+							&StringExpression{
 								Expression: Expression{
 									Value: `"A"`,
 									Range: Range{
@@ -272,10 +292,10 @@ default:
 							},
 						},
 						Children: []Node{
-							Whitespace{
+							&Whitespace{
 								Value: "\t\t",
 							},
-							StringExpression{
+							&StringExpression{
 								Expression: Expression{
 									Value: `"B"`,
 									Range: Range{
@@ -296,6 +316,10 @@ default:
 						},
 					},
 				},
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 62, Line: 5, Col: 1},
+				},
 			},
 		},
 	}
@@ -304,11 +328,11 @@ default:
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			input := parse.NewInput(tt.input)
-			actual, ok, err := switchExpression.Parse(input)
+			actual, matched, err := switchExpression.Parse(input)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !ok {
+			if !matched {
 				t.Fatalf("unexpected failure for input %q", tt.input)
 			}
 			if diff := cmp.Diff(tt.expected, actual); diff != "" {
@@ -321,15 +345,18 @@ default:
 func TestIncompleteSwitch(t *testing.T) {
 	t.Run("no opening brace", func(t *testing.T) {
 		input := parse.NewInput(`switch with no brace`)
-		_, _, err := switchExpression.Parse(input)
+		_, matched, err := switchExpression.Parse(input)
 		if err == nil {
 			t.Fatal("expected an error, got nil")
+		}
+		if !matched {
+			t.Fatal("expected a match, because we started with the text 'switch'")
 		}
 		pe, isParseError := err.(parse.ParseError)
 		if !isParseError {
 			t.Fatalf("expected a parse error, got %T", err)
 		}
-		if pe.Msg != "switch: unterminated (missing closing '{\\n') - https://templ.guide/syntax-and-usage/statements#incomplete-statements" {
+		if pe.Msg != "switch: "+unterminatedMissingCurly {
 			t.Errorf("unexpected error: %v", err)
 		}
 		if pe.Pos.Line != 0 {
@@ -338,11 +365,11 @@ func TestIncompleteSwitch(t *testing.T) {
 	})
 	t.Run("capitalised Switch", func(t *testing.T) {
 		input := parse.NewInput(`Switch with no brace`)
-		_, ok, err := switchExpression.Parse(input)
+		_, matched, err := switchExpression.Parse(input)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if ok {
+		if matched {
 			t.Fatal("expected a non match")
 		}
 	})

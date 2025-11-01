@@ -18,13 +18,13 @@ var goCodeInJavaScript = getGoCodeParser(false)
 func getGoCodeParser(normalizeWhitespace bool) parse.Parser[Node] {
 	return parse.Func(func(pi *parse.Input) (n Node, ok bool, err error) {
 		// Check the prefix first.
-		if _, ok, err = dblOpenBraceWithOptionalPadding.Parse(pi); err != nil || !ok {
+		if _, ok, err = dblOpenBraceWithOptionalPaddingOrNewLine.Parse(pi); err != nil || !ok {
 			return
 		}
 
 		// Once we have a prefix, we must have an expression that returns a string, with optional err.
 		l := pi.Position().Line
-		var r GoCode
+		r := &GoCode{}
 		if r.Expression, err = parseGo("go code", pi, goexpression.Expression); err != nil {
 			return r, false, err
 		}
